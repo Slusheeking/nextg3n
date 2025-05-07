@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple Git automation script for the FinGPT AI Day Trading System.
+Simple Git automation script for the nextg3n system.
 Performs: git status, git add, git commit with timestamp, and git push.
 """
 
