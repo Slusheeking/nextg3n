@@ -1,203 +1,144 @@
 """
 Stock Ranker for NextG3N Trading System
 
-This module implements the StockRanker class, ranking stocks based on multiple factors
-(price predictions, sentiment, options flow, technical indicators). It supports the
-StockPickerAgent in TradeFlowOrchestrator by identifying high-potential stocks.
+Implements stock screening using XGBoost and CNN for volatility, liquidity, and fundamentals.
+Uses MCP tools for Polygon and Yahoo Finance data; publishes to Kafka topic nextg3n-context-events.
 """
 
-import os
-import json
 import logging
 import asyncio
-import aiohttp
+import json
+import torch
+import time
+import datetime
+import torch.nn as nn
+import xgboost as xgb
 from typing import Dict, Any, List
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
-from dotenv import load_dotenv
-import pandas as pd
-import numpy as np
-
-# Monitoring imports
-from monitoring.metrics_logger import MetricsLogger
-
-# Kafka imports
 from kafka import KafkaProducer
+from redis import Redis
+from monitoring.metrics_logger import MetricsLogger
+from services.mcp_client import MCPClient
+
+class CNNRanker(nn.Module):
+    def __init__(self):
+        super(CNNRanker, self).__init__()
+        self.conv1 = nn.Conv2d(1, 16, kernel_size=3)
+        self.pool = nn.MaxPool2d(2, 2)
+        self.fc = nn.Linear(16 * 13 * 13, 1)
+
+    def forward(self, x):
+        x = self.pool(torch.relu(self.conv1(x)))
+        x = x.view(-1, 16 * 13 * 13)
+        return self.fc(x)
 
 class StockRanker:
-    """
-    Class for ranking stocks based on multiple factors in the NextG3N system.
-    Supports the StockPickerAgent in TradeFlowOrchestrator.
-    """
-
     def __init__(self, config: Dict[str, Any]):
-        """
-        Initialize the StockRanker with configuration and ranking settings.
-
-        Args:
-            config: Configuration dictionary with ranking and Kafka settings
-        """
-        init_start_time = datetime.time()
-        
-        # Initialize logging
         self.logger = MetricsLogger(component_name="stock_ranker")
         self.logger.setLevel(logging.INFO)
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         self.logger.addHandler(handler)
 
-        # Load configuration
         self.config = config
-        self.ranking_config = config.get("models", {}).get("stock_ranker", {})
         self.kafka_config = config.get("kafka", {})
-        
-        # Initialize Kafka producer
+        self.redis_config = config.get("storage", {}).get("redis", {})
+        self.mcp_client = MCPClient(config)
+
+        self.xgb_model = xgb.XGBRanker(tree_method='gpu_hist')
+        self.cnn_model = CNNRanker().to('cuda')
+        self.cnn_model.eval()
         self.producer = KafkaProducer(
             bootstrap_servers=self.kafka_config.get("bootstrap_servers", "localhost:9092"),
             value_serializer=lambda v: json.dumps(v).encode('utf-8')
         )
-
-        # Initialize ranking weights
-        self.weights = self.ranking_config.get("weights", {
-            "price_prediction": 0.4,
-            "sentiment_score": 0.3,
-            "options_sentiment": 0.2,
-            "technical_score": 0.1
-        })
-        
-        # Initialize thread pool for parallel processing
-        self.executor = ThreadPoolExecutor(max_workers=5)
-        
-        init_duration = (datetime.time() - init_start_time) * 1000
-        self.logger.timing("stock_ranker.initialization_time_ms", init_duration)
+        self.redis = Redis(
+            host=self.redis_config.get("host", "localhost"),
+            port=self.redis_config.get("port", 6379),
+            db=self.redis_config.get("db", 0)
+        )
         self.logger.info("StockRanker initialized")
 
-    async def rank_stocks(
-        self,
-        stock_data: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        """
-        Rank stocks based on aggregated data.
-
-        Args:
-            stock_data: List of dictionaries containing stock data (symbol, predictions, sentiment, etc.)
-
-        Returns:
-            Dictionary containing ranked stocks
-        """
-        start_time = datetime.time()
-        operation_id = f"rank_stocks_{int(start_time)}"
-        self.logger.info(f"Ranking {len(stock_data)} stocks - Operation: {operation_id}")
+    async def rank_stocks(self, symbols: List[str]) -> Dict[str, Any]:
+        operation_id = f"rank_{int(time.time())}"
+        self.logger.info(f"Ranking stocks: {symbols} - Operation: {operation_id}")
 
         try:
-            async with aiohttp.ClientSession() as session:
-                loop = asyncio.get_event_loop()
-                
-                # Process stock data
-                ranked_stocks = await loop.run_in_executor(
-                    self.executor,
-                    lambda: self._process_and_rank(stock_data)
-                )
+            features = []
+            for symbol in symbols:
+                quote = await self.mcp_client.call_tool("polygon", "get_realtime_quote", {"symbol": symbol})
+                bars = await self.mcp_client.call_tool("polygon", "get_historical_bars", {"symbol": symbol, "timeframe": "1d", "limit": 30})
+                fundamentals = await self.mcp_client.call_tool("yahoo_finance", "get_fundamentals", {"symbol": symbol})
+
+                if not (quote["success"] and bars["success"] and fundamentals["success"]):
+                    continue
+
+                volatility = (max(b["high"] for b in bars["bars"]) - min(b["low"] for b in bars["bars"])) / bars["bars"][-1]["close"]
+                liquidity = sum(b["volume"] for b in bars["bars"]) / len(bars["bars"])
+                pe_ratio = fundamentals["fundamentals"].get("pe_ratio", 0)
+                market_cap = fundamentals["fundamentals"].get("market_cap", 0)
+
+                features.append({
+                    "symbol": symbol,
+                    "volatility": volatility,
+                    "liquidity": liquidity,
+                    "pe_ratio": pe_ratio,
+                    "market_cap": market_cap
+                })
+
+            # XGBoost ranking
+            X = [[f["volatility"], f["liquidity"], f["pe_ratio"], f["market_cap"]] for f in features]
+            if not X:
+                return {"success": False, "error": "No valid features", "operation_id": operation_id}
+
+            dmatrix = xgb.DMatrix(X)
+            scores = self.xgb_model.predict(dmatrix)
+
+            # CNN ranking
+            cnn_scores = []
+            for f in features:
+                bars = await self.mcp_client.call_tool("polygon", "get_historical_bars", {"symbol": f["symbol"], "timeframe": "1m", "limit": 30})
+                if bars["success"]:
+                    data = torch.tensor([[b["close"] for b in bars["bars"]]], dtype=torch.float32).unsqueeze(0).to('cuda')
+                    with torch.no_grad():
+                        score = self.cnn_model(data).cpu().item()
+                    cnn_scores.append(score)
+                else:
+                    cnn_scores.append(0)
+
+            ranked_stocks = [
+                {
+                    "symbol": f["symbol"],
+                    "score": 0.6 * s + 0.4 * c,  # Weighted combination
+                    "volatility": f["volatility"],
+                    "liquidity": f["liquidity"],
+                    "market_cap": f["market_cap"]
+                }
+                for f, s, c in zip(features, scores, cnn_scores)
+                if f["volatility"] > 0.03 and f["liquidity"] > 2_000_000 and f["market_cap"] > 500_000_000
+            ]
+            ranked_stocks.sort(key=lambda x: x["score"], reverse=True)
+            ranked_stocks = ranked_stocks[:5]  # Top 5 for $5,000 capital
 
             result = {
                 "success": True,
-                "ranked_stocks": ranked_stocks,
-                "stock_count": len(ranked_stocks),
+                "stocks": ranked_stocks,
+                "count": len(ranked_stocks),
                 "operation_id": operation_id,
                 "timestamp": datetime.utcnow().isoformat()
             }
-
-            # Publish to Kafka
+            self.redis.setex(f"ranking:{operation_id}", 300, json.dumps(result))
             self.producer.send(
-                f"{self.kafka_config.get('topic_prefix', 'nextg3n_')}ranking_events",
+                f"{self.kafka_config.get('topic_prefix', 'nextg3n-')}context-events",
                 {"event": "stocks_ranked", "data": result}
             )
-
-            duration = (datetime.time() - start_time) * 1000
-            self.logger.timing("stock_ranker.rank_stocks_time_ms", duration)
-            self.logger.info(f"Ranked {len(ranked_stocks)} stocks")
-            self.logger.counter("stock_ranker.rankings_completed", len(ranked_stocks))
             return result
 
         except Exception as e:
             self.logger.error(f"Error ranking stocks: {e}")
-            self.logger.counter("stock_ranker.ranking_errors", len(stock_data))
-            return {
-                "success": False,
-                "error": str(e),
-                "operation_id": operation_id,
-                "timestamp": datetime.utcnow().isoformat()
-            }
+            return {"success": False, "error": str(e), "operation_id": operation_id}
 
-    def _process_and_rank(self, stock_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Process stock data and compute ranking scores.
-
-        Args:
-            stock_data: List of dictionaries containing stock data
-
-        Returns:
-            Sorted list of ranked stocks with scores
-        """
-        try:
-            # Convert to DataFrame for efficient processing
-            df = pd.DataFrame(stock_data)
-            
-            # Normalize features (scale to [0, 1])
-            def normalize(series):
-                min_val, max_val = series.min(), series.max()
-                if max_val == min_val:
-                    return np.zeros_like(series)
-                return (series - min_val) / (max_val - min_val)
-            
-            # Extract and normalize features
-            df["price_score"] = normalize(df.get("price_prediction", {}).apply(lambda x: x.get("predicted_price_change", 0.0)))
-            df["sentiment_score"] = normalize(df.get("sentiment", {}).apply(lambda x: x.get("sentiment_score", 0.0)))
-            df["options_score"] = normalize(df.get("options_sentiment", {}).apply(lambda x: x.get("sentiment_score", 0.0)))
-            
-            # Technical score (e.g., combine RSI and MACD)
-            df["technical_score"] = normalize(
-                df.get("technical_indicators", {}).apply(lambda x: (
-                    (x.get("rsi", 50.0) - 50) / 50 +  # Normalize RSI around 50
-                    x.get("macd", 0.0) / abs(x.get("macd", 0.0) or 1.0)  # Normalize MACD
-                ) / 2)
-            )
-            
-            # Compute composite score
-            df["composite_score"] = (
-                self.weights["price_prediction"] * df["price_score"] +
-                self.weights["sentiment_score"] * df["sentiment_score"] +
-                self.weights["options_sentiment"] * df["options_score"] +
-                self.weights["technical_score"] * df["technical_score"]
-            )
-            
-            # Sort by composite score (descending)
-            df = df.sort_values(by="composite_score", ascending=False)
-            
-            # Prepare ranked stocks
-            ranked_stocks = [
-                {
-                    "symbol": row.get("symbol", ""),
-                    "composite_score": row["composite_score"],
-                    "price_score": row["price_score"],
-                    "sentiment_score": row["sentiment_score"],
-                    "options_score": row["options_score"],
-                    "technical_score": row["technical_score"]
-                }
-                for _, row in df.iterrows()
-            ]
-            
-            return ranked_stocks
-        
-        except Exception as e:
-            self.logger.error(f"Error processing and ranking stocks: {e}")
-            return []
-
-    def shutdown(self):
-        """
-        Shutdown the StockRanker and close resources.
-        """
-        self.logger.info("Shutting down StockRanker")
-        self.executor.shutdown(wait=True)
+    async def shutdown(self):
         self.producer.close()
-        self.logger.info("Kafka producer closed")
+        self.redis.close()
+        await self.mcp_client.shutdown()
+        self.logger.info("StockRanker shutdown")

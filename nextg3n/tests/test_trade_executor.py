@@ -1,63 +1,47 @@
 """
-Unit tests for the TradeExecutor class in the NextG3N Trading System.
+Unit tests for TradeExecutor in NextG3N Trading System
+
+Tests trade execution with LSTM/CNN peak detection and slippage controls.
 """
 
-import unittest
-from unittest.mock import patch, MagicMock
-from nextg3n.models.trade.trade_executor import TradeExecutor
+import pytest
 import asyncio
+import json
+import datetime
+from unittest.mock import AsyncMock, patch
+from models.trade.trade_executor import TradeExecutor
 
-class TestTradeExecutor(unittest.TestCase):
-    def setUp(self):
-        self.config = {
-            "models": {
-                "trade": {
-                    "capital": 100000,
-                    "max_position_size": 0.05,
-                    "alpaca_api_key": "test_key",
-                    "alpaca_api_secret": "test_secret"
-                }
-            },
-            "kafka": {"bootstrap_servers": "localhost:9092"}
+@pytest.mark.asyncio
+class TestTradeExecutor:
+    @pytest.fixture
+    def config(self):
+        return {
+            "kafka": {"bootstrap_servers": "localhost:9092", "topic_prefix": "nextg3n-"},
+            "storage": {"redis": {"host": "localhost", "port": 6379, "db": 0}},
+            "models": {"trade": {"alpaca_api_key": "key", "alpaca_api_secret": "secret"}}
         }
-        self.trade_executor = TradeExecutor(self.config)
-        self.trade_executor.logger = MagicMock()
 
-    @patch('alpaca_trade_api.rest.REST')
-    async def test_execute_trade_success(self, mock_alpaca):
-        # Mock Alpaca API
-        mock_alpaca_instance = MagicMock()
-        mock_alpaca.return_value = mock_alpaca_instance
-        mock_account = MagicMock(cash="100000")
-        mock_alpaca_instance.get_account.return_value = mock_account
-        mock_order = MagicMock(id="order_123")
-        mock_alpaca_instance.submit_order.return_value = mock_order
-        
-        # Test decision
-        decision = {"symbol": "AAPL", "action": "buy", "confidence": 0.9}
-        current_price = 150.0
-        
-        # Run execute_trade
-        result = await self.trade_executor.execute_trade(decision, current_price)
-        
-        self.assertTrue(result["success"])
-        self.assertEqual(result["symbol"], "AAPL")
-        self.assertEqual(result["action"], "buy")
-        self.assertEqual(result["order_id"], "order_123")
-        self.trade_executor.logger.info.assert_called()
+    @pytest.fixture
+    def trade_executor(self, config):
+        return TradeExecutor(config)
 
-    @patch('alpaca_trade_api.rest.REST')
-    async def test_execute_trade_invalid_action(self, mock_alpaca):
-        # Test with invalid action
-        decision = {"symbol": "AAPL", "action": "invalid", "confidence": 0.9}
-        current_price = 150.0
-        
-        # Run execute_trade
-        result = await self.trade_executor.execute_trade(decision, current_price)
-        
-        self.assertFalse(result["success"])
-        self.assertIn("error", result)
-        self.trade_executor.logger.error.assert_called()
+    async def test_execute_trade_success(self, trade_executor):
+        with patch("services.mcp_client.MCPClient.call_tool", side_effect=[
+            AsyncMock(return_value={"success": True, "price": 100.0}),
+            AsyncMock(return_value={"success": True, "order_id": "123", "status": "filled"}),
+            AsyncMock(return_value={"success": True, "filled_avg_price": 100.5})
+        ]):
+            result = await trade_executor.execute_trade("AAPL", "buy", 10)
+            assert result["success"]
+            assert result["order_id"] == "123"
+            assert "slippage" in result
 
-if __name__ == '__main__':
-    unittest.main()
+    async def test_monitor_trade_peak_detected(self, trade_executor):
+        with patch("services.mcp_client.MCPClient.call_tool", side_effect=[
+            AsyncMock(return_value={"success": True, "filled_avg_price": 100.0}),
+            AsyncMock(return_value={"success": True, "price": 105.0})
+        ]):
+            self.redis.set(f"trade:AAPL", json.dumps({"price": 105.0, "timestamp": datetime.utcnow().isoformat()}))
+            result = await trade_executor.monitor_trade("AAPL", "123")
+            assert result["success"]
+            assert result["should_exit"]  # Peak detected

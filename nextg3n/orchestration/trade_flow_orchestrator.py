@@ -1,245 +1,264 @@
 """
 Trade Flow Orchestrator for NextG3N Trading System
 
-This module implements the TradeFlowOrchestrator class, coordinating AutoGen agents
-to manage trading workflows, including stock selection, sentiment analysis, prediction,
-context retrieval, trading decisions, training, and backtesting with LLM-driven optimization.
+Coordinates AutoGen 0.9.0 agents and MCP tools for the trading workflow.
+Manages stock screening, analysis, decision-making, execution, and monitoring.
+Publishes to Kafka topic nextg3n-orchestration-events.
 """
 
-import os
-import json
 import logging
 import asyncio
+import json
+import os
 import time
+import datetime
+import pipeline
 from typing import Dict, Any, List
-from datetime import datetime
-from dotenv import load_dotenv
-from kafka import KafkaConsumer, KafkaProducer
 from autogen import ConversableAgent, GroupChat, GroupChatManager
-
-# Monitoring imports
+from kafka import KafkaProducer
+from redis import Redis
 from monitoring.metrics_logger import MetricsLogger
-
-# Model imports (assumed to exist)
-from models.sentiment.sentiment_model import SentimentModel
-from models.forecast.forecast_model import ForecastModel
-from models.context.context_retriever import ContextRetriever
+from services.mcp_client import MCPClient
 from models.decision.decision_model import DecisionModel
-from models.stock_ranker.stock_ranker import StockRanker
-from models.trade.trade_executor import TradeExecutor
-from models.trainer.trainer_model import TrainerModel
-from models.backtest.backtest_engine import BacktestEngine
+
 
 class TradeFlowOrchestrator:
-    """
-    Orchestrates trading workflows using AutoGen agents, integrating LLM-driven training
-    and backtesting for the NextG3N system.
-    """
-
     def __init__(self, config: Dict[str, Any]):
-        """
-        Initialize the TradeFlowOrchestrator with configuration.
-
-        Args:
-            config: Configuration dictionary
-        """
-        load_dotenv()
-        self.logger = MetricsLogger(component_name="trade_flow_orchestrator")
+        self.logger = MetricsLogger(
+            component_name="trade_flow_orchestrator")
         self.logger.setLevel(logging.INFO)
         handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         self.logger.addHandler(handler)
 
         self.config = config
         self.kafka_config = config.get("kafka", {})
+        self.redis_config = config.get("storage", {}).get("redis", {})
         self.llm_config = config.get("llm", {})
-
-        # Initialize Kafka producer
+        self.mcp_client = MCPClient(config)
+        self.decision_model = DecisionModel(config)
+        self.strategy_refinement_enabled = self.config.get("orchestration", {}).get("strategy_refinement", {}).get("enabled", False)
+        self.strategy_refinement_model_name = self.config.get("orchestration", {}).get("strategy_refinement", {}).get("model_name", "google/flan-t5-base")
+        self.llm_pipeline = pipeline("text2text-generation", model=self.strategy_refinement_model_name)
         self.producer = KafkaProducer(
-            bootstrap_servers=self.kafka_config.get("bootstrap_servers", "localhost:9092"),
+            bootstrap_servers=self.kafka_config.get(
+                "bootstrap_servers", "localhost:9092"),
             value_serializer=lambda v: json.dumps(v).encode('utf-8')
         )
-
-        # Initialize models (placeholder; replace with actual implementations)
-        self.models = {
-            "sentiment": SentimentModel(config),
-            "forecast": ForecastModel(config),
-            "context": ContextRetriever(config),
-            "decision": DecisionModel(config),
-            "stock_ranker": StockRanker(config),
-            "trade": TradeExecutor(config),
-            "trainer": TrainerModel(config),
-            "backtest": BacktestEngine(config)
-        }
-
-        # Initialize AutoGen agents
-        self.agents = {
-            "stock_picker": ConversableAgent(
-                name="StockPicker",
-                llm_config={
-                    "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
-                },
-                system_message="Select promising stocks based on rankings and market data."
-            ),
-            "sentiment_analyzer": ConversableAgent(
-                name="SentimentAnalyzer",
-                llm_config={
-                    "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
-                },
-                system_message="Analyze sentiment from news and social data."
-            ),
-            "predictor": ConversableAgent(
-                name="Predictor",
-                llm_config={
-                    "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
-                },
-                system_message="Generate price predictions using ForecastModel."
-            ),
-            "context_analyzer": ConversableAgent(
-                name="ContextAnalyzer",
-                llm_config={
-                    "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
-                },
-                system_message="Retrieve and summarize market context."
-            ),
-            "trade_decider": ConversableAgent(
-                name="TradeDecider",
-                llm_config={
-                    "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
-                },
-                system_message="Make trading decisions based on predictions and context."
-            ),
-            "trainer": ConversableAgent(
-                name="Trainer",
-                llm_config={
-                    "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
-                },
-                system_message="Train and fine-tune models."
-            ),
-            "hyperparameter_optimizer": ConversableAgent(
-                name="HyperparameterOptimizer",
-                llm_config={
-                    "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
-                },
-                system_message="Optimize model hyperparameters based on training metrics."
-            ),
-            "strategy_generator": ConversableAgent(
-                name="StrategyGenerator",
-                llm_config={
-                    "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
-                },
-                system_message="Generate and refine trading strategies for backtesting."
-            ),
-            "user_proxy": ConversableAgent(
-                name="UserProxy",
-                is_termination_msg=lambda x: x.get("content", "").rstrip().endswith("TERMINATE"),
-                human_input_mode="NEVER",
-                system_message="Proxy for user interactions."
-            )
-        }
-
-        # Initialize group chat
-        self.group_chat = GroupChat(
-            agents=list(self.agents.values()),
-            messages=[],
-            max_round=10
-        )
-        self.group_chat_manager = GroupChatManager(
-            groupchat=self.group_chat,
-            llm_config={
-                "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
-            }
+        self.redis = Redis(
+            host=self.redis_config.get("host", "localhost"),
+            port=self.redis_config.get("port", 6379),
+            db=self.redis_config.get("db", 0)
         )
 
+        # AutoGen agents - REMOVED
+        # self.stock_picker = ConversableAgent(
+        #     name="StockPicker",
+        #     llm_config={"config_list": [{"model": self.llm_config.get(
+        #         "model", "gpt-4"), "api_key": os.getenv(
+        #             "OPENROUTER_API_KEY")}]},
+        #     system_message="Select promising stocks based on volatility,
+        #     liquidity, and sentiment."
+        # )
+        # self.sentiment_analyzer = ConversableAgent(
+        #     name="SentimentAnalyzer",
+        #     llm_config={"config_list": [{"model": self.llm_config.get(
+        #         "model", "gpt-4"), "api_key": os.getenv(
+        #             "OPENROUTER_API_KEY")}]},
+        #     system_message="Analyze sentiment data for trading
+        #     decisions."
+        # )
+        # self.predictor = ConversableAgent(
+        #     name="Predictor",
+        #     llm_config={"config_list": [{"model": self.llm_config.get(
+        #         "model", "gpt-4"), "api_key": os.getenv(
+        #             "OPENROUTER_API_KEY")}]},
+        #     system_message="Predict price movements based on historical
+        #     and real-time data."
+        # )
+        # self.context_analyzer = ConversableAgent(
+        #     name="ContextAnalyzer",
+        #     llm_config={"config_list": [{"model": self.llm_config.get(
+        #         "model", "gpt-4"), "api_key": os.getenv(
+        #             "OPENROUTER_API_KEY")}]},
+        #     system_message="Provide market context for trading
+        #     decisions."
+        # )
+        # self.trade_decider = ConversableAgent(
+        #     name="TradeDecider",
+        #     llm_config={"config_list": [{"model": self.llm_config.get(
+        #         "model", "gpt-4"), "api_key": os.getenv(
+        #             "OPENROUTER_API_KEY")}]},
+        #     system_message="Make final trading decisions based on agent
+        #     inputs."
+        # )
+        # self.group_chat = GroupChat(
+        #     agents=[self.stock_picker, self.sentiment_analyzer,
+        #             self.predictor, self.context_analyzer,
+        #             self.trade_decider],
+        #     messages=[],
+        #     max_round=3
+        # )
+        # self.group_chat_manager = GroupChatManager(
+        #     groupchat=self.group_chat,
+        #     llm_config={"config_list": [{"model": self.llm_config.get(
+        #         "model", "gpt-4"), "api_key": os.getenv(
+        #             "OPENROUTER_API_KEY")}]}
+        # )
         self.logger.info("TradeFlowOrchestrator initialized")
 
-    async def start_workflow(self, task: str):
-        """
-        Start a trading workflow using AutoGen agents.
-
-        Args:
-            task: Task description (e.g., "Run daily trading cycle")
-        """
+    async def run_trading_workflow(self) -> Dict[str, Any]:
         operation_id = f"workflow_{int(time.time())}"
-        self.logger.info(f"Starting workflow: {task}, Operation: {operation_id}")
+        self.logger.info(f"Running trading workflow - Operation: {operation_id}")
 
         try:
-            await self.group_chat_manager.initiate_chat(
-                self.agents["user_proxy"],
-                message=task
+            # Step 1: Stock screening
+            watchlist_key = "watchlist"
+            watchlist = self.redis.get(watchlist_key)
+            if watchlist:
+                symbols = json.loads(watchlist.decode('utf-8'))
+                self.logger.info(f"Fetched watchlist from Redis: {symbols}")
+            else:
+                self.logger.warning("Watchlist not found in Redis. Using default symbols.")
+                symbols = ["AAPL", "GOOGL", "TSLA"]  # Default symbols if watchlist is not found
+            ranking = await self.mcp_client.call_tool("stock_ranker", "rank_stocks", {"symbols": symbols})
+            if not ranking["success"]:
+                return {"success": False, "error": "Stock ranking failed", "operation_id": operation_id}
+
+            top_stocks = [s["symbol"] for s in ranking["stocks"]]
+            self.logger.info(f"Top stocks: {top_stocks}")
+
+            # Step 2: Analysis and decision
+            decisions = []
+            for symbol in top_stocks:
+                # sentiment = await self.mcp_client.call_tool("sentiment", "analyze_sentiment", {"symbol": symbol})
+                # forecast = await self.mcp_client.call_tool("forecast", "predict_price", {"symbol": symbol, "timeframe": "1m"})
+                # context = await self.mcp_client.call_tool("context", "retrieve_context", {"symbol": symbol})
+
+                # message = f"Evaluate {symbol}: Sentiment={sentiment.get('sentiment_score', 0)}, Forecast={forecast.get('prediction', 0)}, Context={context.get('context_summary', '')}"
+                # loop = asyncio.get_event_loop()
+                # chat_result = await loop.run_in_executor(
+                #     None,
+                #     lambda: self.group_chat_manager.initiate_chat(self.stock_picker, message=message)
+                # )
+
+                # action = "buy" if "buy" in chat_result.lower() else "sell" if "sell" in chat_result.lower() else "hold"
+                # if action != "hold":
+                #     trade = await self.mcp_client.call_tool("alpaca", "place_order", {
+                #         "symbol": symbol,
+                #         "action": action,
+                #         "quantity": 10,  # Placeholder; calculate based on $1,000 max
+                #         "order_type": "market"
+                #     })
+                #     if trade["success"]:
+                #         decisions.append({"symbol": symbol, "action": action, "order_id": trade["order_id"]})
+                decision = await self.decision_model.make_decision(symbol)
+                if decision["success"]:
+                    action = decision["action"]
+                    if action != "hold":
+                        # Calculate quantity based on max position
+                        # size and current price
+                        max_position_size = self.config.get(
+                            "trade", {}).get("max_position_size", 0.2)
+                        capital = self.config.get("trade", {}).get(
+                            "capital", 5000.0)
+                        max_trade_amount = capital * max_position_size
+
+                        # Fetch current price from market data service
+                        current_price_data = await self.mcp_client.call_tool(
+                            "market_data", "get_latest_price",
+                            {"symbol": symbol})
+                        if current_price_data["success"]:
+                            current_price = current_price_data["price"]
+                            quantity = int(
+                                max_trade_amount / current_price)
+                            self.logger.info(
+                                f"Calculated quantity for {symbol}: "
+                                f"{quantity}")
+                        else:
+                            self.logger.warning(
+                                f"Failed to fetch current price for "
+                                f"{symbol}. Using default quantity of 1.")
+                            quantity = 1
+
+                        trade = await self.mcp_client.call_tool(
+                            "alpaca", "place_order", {
+                                "symbol": symbol,
+                                "action": action,
+                                "quantity": quantity,
+                                "order_type": "market"
+                            })
+                        if trade["success"]:
+                            decisions.append({
+                                "symbol": symbol,
+                                "action": action,
+                                "order_id": trade["order_id"]
+                            })
+            # Step 3: Monitoring
+            for decision in decisions:
+                monitor = await self.mcp_client.call_tool("trade_executor", "monitor_trade", {
+                    "symbol": decision["symbol"],
+                    "order_id": decision["order_id"]
+                })
+                if monitor["should_exit"]:
+                    await self.mcp_client.call_tool("alpaca", "place_order", {
+                        "symbol": decision["symbol"],
+                        "action": "sell" if decision["action"] == "buy" else "buy",
+                        "quantity": 10,
+                        "order_type": "market"
+                    })
+
+            result = {
+                "success": True,
+                "decisions": decisions,
+                "operation_id": operation_id,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            self.redis.setex(f"workflow:{operation_id}", 300, json.dumps(result))
+            self.producer.send(
+                f"{self.kafka_config.get('topic_prefix', 'nextg3n-')}orchestration-events",
+                {"event": "workflow_completed", "data": result}
             )
-            self.logger.info(f"Workflow completed: {task}")
+            return result
+
         except Exception as e:
-            self.logger.error(f"Workflow error: {e}")
+            self.logger.error(f"Error running trading workflow: {e}")
+            return {"success": False, "error": str(e), "operation_id": operation_id}
 
-    async def consume_kafka_events(self):
-        """
-        Consume Kafka events and trigger agent actions.
-        """
-        operation_id = f"kafka_{int(time.time())}"
-        consumer = KafkaConsumer(
-            f"{self.kafka_config.get('topic_prefix', 'nextg3n-')}trainer-events",
-            f"{self.kafka_config.get('topic_prefix', 'nextg3n-')}backtest-events",
-            bootstrap_servers=self.kafka_config.get("bootstrap_servers", "localhost:9092"),
-            group_id="orchestrator",
-            auto_offset_reset="latest",
-            value_deserializer=lambda x: json.loads(x.decode('utf-8'))
-        )
+        finally:
+            if self.strategy_refinement_enabled:
+                await self.refine_strategy_with_llm(result)
 
-        self.logger.info("Starting Kafka consumer for trainer and backtest events")
-
-        for message in consumer:
-            try:
-                event = message.value.get("event")
-                data = message.value.get("data")
-                topic = message.topic
-
-                if topic.endswith("trainer-events"):
-                    if event == "model_trained":
-                        self.logger.info(f"Received model_trained event: {data['model_name']}")
-                        # Trigger hyperparameter optimization
-                        await self.agents["hyperparameter_optimizer"].initiate_chat(
-                            self.agents["user_proxy"],
-                            message=f"Optimize hyperparameters for {data['model_name']} based on metrics: {data.get('metrics', {})}"
-                        )
-                    elif event == "model_evaluated":
-                        self.logger.info(f"Received model_evaluated event: {data['model_name']}")
-                        # Trigger retraining if metrics are poor
-                        if data.get("metrics", {}).get("accuracy", 0) < 0.7:
-                            await self.agents["trainer"].initiate_chat(
-                                self.agents["user_proxy"],
-                                message=f"Retrain {data['model_name']} with suggestions: {data.get('llm_suggestions', {})}"
-                            )
-
-                elif topic.endswith("backtest-events"):
-                    if event == "backtest_completed":
-                        self.logger.info(f"Received backtest_completed event: {data['symbol']}")
-                        # Trigger strategy refinement
-                        await self.agents["strategy_generator"].initiate_chat(
-                            self.agents["user_proxy"],
-                            message=f"Refine trading strategy for {data['symbol']} based on backtest: {data}"
-                        )
-                    elif event == "parallel_backtest_completed":
-                        self.logger.info(f"Received parallel_backtest_completed event: {data['total_results']} results")
-                        # Trigger analysis of best strategies
-                        await self.agents["strategy_generator"].initiate_chat(
-                            self.agents["user_proxy"],
-                            message=f"Analyze parallel backtest results: {data}"
-                        )
-
-                # Publish orchestration event
-                self.producer.send(
-                    f"{self.kafka_config.get('topic_prefix', 'nextg3n-')}orchestration-events",
-                    {"event": "agent_action", "data": {"operation_id": operation_id, "topic": topic, "event": event}}
-                )
-
-            except Exception as e:
-                self.logger.error(f"Error processing Kafka event: {e}")
-
-    def shutdown(self):
-        """
-        Shutdown the orchestrator and close resources.
-        """
-        self.logger.info("Shutting down TradeFlowOrchestrator")
+    async def shutdown(self):
         self.producer.close()
-        self.logger.info("Kafka producer closed")
+        self.redis.close()
+        await self.mcp_client.shutdown()
+        await self.decision_model.shutdown()
+        self.logger.info("TradeFlowOrchestrator shutdown")
+
+    async def refine_strategy_with_llm(self, workflow_result: Dict[str, Any]) -> None:
+        """
+        Refines the trading strategy using a large language model.
+        """
+        try:
+            # Fetch historical trade data from Redis or a database
+            # For simplicity, let's assume the workflow_result contains the necessary data
+            trade_data = workflow_result.get("decisions", [])
+
+            # Prepare a prompt for the LLM
+            prompt = f"Analyze the following trading decisions and suggest improvements to the strategy: {trade_data}. Consider factors like profitability, risk management, and market conditions."
+
+            # Call the LLM for analysis
+            llm_response = self.llm_pipeline(prompt, max_length=200, num_return_sequences=1)[0]["generated_text"]
+
+            # Log the LLM response
+            self.logger.info(f"LLM strategy refinement suggestions: {llm_response}")
+
+            # Implement the suggested improvements (e.g., update DecisionModel, adjust weights)
+            # This part requires careful consideration and implementation based on the LLM's suggestions
+            # For now, let's just log a message indicating that the improvements need to be implemented
+            self.logger.info("LLM strategy refinement suggestions need to be implemented.")
+
+        except Exception as e:
+            self.logger.error(f"LLM strategy refinement failed: {e}")

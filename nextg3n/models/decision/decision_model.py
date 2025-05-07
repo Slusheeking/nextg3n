@@ -1,325 +1,225 @@
 """
 Decision Model for NextG3N Trading System
 
-This module implements the DecisionModel class, using a Decision Transformer and
-OpenRouter LLM for trading decisions and explanations. It supports the TradeAgent in
-TradeFlowOrchestrator.
+Implements trading decisions using directly integrated AI/ML models for low latency.
+Fetches data directly, runs models, applies deterministic logic, and publishes to Kafka.
 """
 
-import os
-import json
 import logging
-import asyncio
+import json
 import time
-from typing import Dict, Any
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
-from dotenv import load_dotenv
+import datetime
 import torch
-import aiohttp
-import numpy as np
-from torch import nn
+from typing import Dict, Any, List, Optional
 
-# Monitoring imports
+# Import necessary models and services directly
+# SentimentModel is kept but will not be used in the core decision logic
+from models.sentiment.sentiment_model import SentimentModel
+from models.forecast.forecast_model import ForecastModel
+from services.market_data_service import MarketDataService
+
+from kafka import KafkaProducer
+from redis import Redis
 from monitoring.metrics_logger import MetricsLogger
 
-# Kafka imports
-from kafka import KafkaProducer
-
-class DecisionTransformer(nn.Module):
-    """
-    Decision Transformer model for trading decisions.
-    """
-    def __init__(self, config: Dict[str, Any]):
-        super().__init__()
-        self.config = config
-        state_dim = config.get("state_dim", 64)
-        action_dim = config.get("action_dim", 3)
-        hidden_size = config.get("hidden_size", 256)
-        n_layer = config.get("n_layer", 6)
-        n_head = config.get("n_head", 8)
-        
-        # Simplified transformer architecture
-        self.embedding = nn.Linear(state_dim, hidden_size)
-        self.transformer = nn.Transformer(
-            d_model=hidden_size,
-            nhead=n_head,
-            num_encoder_layers=n_layer,
-            dim_feedforward=hidden_size * 4
-        )
-        self.action_head = nn.Linear(hidden_size, action_dim)
-        
-        # Move to GPU if available
-        if torch.cuda.is_available():
-            self.to('cuda')
-        
-    def forward(self, states: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass for decision prediction.
-
-        Args:
-            states: Input states tensor (batch, sequence, state_dim)
-
-        Returns:
-            Predicted action probabilities
-        """
-        states = self.embedding(states)
-        states = self.transformer(states, states)
-        actions = self.action_head(states)
-        return actions
-
 class DecisionModel:
-    """
-    Model for making trading decisions using a Decision Transformer and OpenRouter LLM.
-    Supports the TradeAgent in TradeFlowOrchestrator.
-    """
-
     def __init__(self, config: Dict[str, Any]):
-        """
-        Initialize the DecisionModel with configuration and model settings.
-
-        Args:
-            config: Configuration dictionary with model and Kafka settings
-        """
-        init_start_time = time.time()
-        
-        # Initialize logging
         self.logger = MetricsLogger(component_name="decision_model")
         self.logger.setLevel(logging.INFO)
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         self.logger.addHandler(handler)
 
-        # Load configuration
         self.config = config
-        self.model_config = config.get("models", {}).get("decision", {})
         self.kafka_config = config.get("kafka", {})
-        self.llm_config = config.get("llm", {})
-        
-        # Initialize Kafka producer
-        self.producer = KafkaProducer(
-            bootstrap_servers=self.kafka_config.get("bootstrap_servers", "localhost:9092"),
-            value_serializer=lambda v: json.dumps(v).encode('utf-8')
-        )
+        self.redis_config = config.get("storage", {}).get("redis", {})
 
-        # Initialize Decision Transformer model
-        self.model = None
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self._initialize_model()
-        
-        # Initialize thread pool for parallel processing
-        self.executor = ThreadPoolExecutor(max_workers=5)
-        
-        init_duration = (time.time() - init_start_time) * 1000
-        self.logger.timing("decision_model.initialization_time_ms", init_duration)
-        self.logger.info("DecisionModel initialized")
-
-    def _initialize_model(self):
-        """
-        Initialize the Decision Transformer model.
-        """
+        # Initialize directly integrated components
+        # SentimentModel is initialized but not used in the core decision path
         try:
-            self.model = DecisionTransformer(self.model_config)
-            
-            # Load pre-trained checkpoint if provided
-            checkpoint_path = self.model_config.get("checkpoint_path")
-            if checkpoint_path and os.path.exists(checkpoint_path):
-                state_dict = torch.load(checkpoint_path, map_location=self.device)
-                self.model.load_state_dict(state_dict)
-                self.logger.info(f"Loaded pre-trained checkpoint from {checkpoint_path}")
-            
-            self.model.to(self.device)
-            self.model.eval()  # Set to evaluation mode
-            
+            self.sentiment_model = SentimentModel(config.get("sentiment_model", {}))
+            self.logger.info("SentimentModel initialized (for potential future use outside core loop).")
         except Exception as e:
-            self.logger.error(f"Failed to initialize Decision Transformer model: {e}")
-            self.model = None
-            raise
+            self.logger.error(f"Failed to initialize SentimentModel: {e}")
+            self.sentiment_model = None
 
-    async def make_decision(
-        self,
-        symbol: str,
-        state: Dict[str, Any],
-        explain: bool = False
-    ) -> Dict[str, Any]:
-        """
-        Make a trading decision for a stock, optionally generating an LLM explanation.
+        try:
+            self.forecast_model = ForecastModel(config.get("forecast_model", {}))
+            self.logger.info("ForecastModel initialized.")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize ForecastModel: {e}")
+            self.forecast_model = None
 
-        Args:
-            symbol: Stock symbol
-            state: Input state dictionary (price predictions, sentiment, etc.)
-            explain: Generate an LLM explanation for the decision (default: False)
+        try:
+            self.market_data_service = MarketDataService(config.get("market_data_service", {}))
+            self.logger.info("MarketDataService initialized.")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize MarketDataService: {e}")
+            self.market_data_service = None
 
-        Returns:
-            Dictionary containing decision and optional explanation
-        """
-        start_time = time.time()
-        operation_id = f"make_decision_{int(start_time)}"
-        self.logger.info(f"Making decision for {symbol} (explain={explain}) - Operation: {operation_id}")
+        # Initialize Kafka Producer and Redis
+        try:
+            self.producer = KafkaProducer(
+                bootstrap_servers=self.kafka_config.get("bootstrap_servers", "localhost:9092"),
+                value_serializer=lambda v: json.dumps(v).encode('utf-8')
+            )
+            self.logger.info("KafkaProducer initialized.")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize KafkaProducer: {e}")
+            self.producer = None
 
-        if not self.model:
-            self.logger.error("Decision Transformer model not initialized")
-            return {
-                "success": False,
-                "error": "Decision Transformer model not initialized",
+        try:
+            self.redis = Redis(
+                host=self.redis_config.get("host", "localhost"),
+                port=self.redis_config.get("port", 6379),
+                db=self.redis_config.get("db", 0)
+            )
+            self.logger.info("Redis client initialized.")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize Redis client: {e}")
+            self.redis = None
+
+        self.logger.info("DecisionModel initialized with directly integrated components.")
+
+    async def make_decision(self, symbol: str) -> Dict[str, Any]:
+        operation_id = f"decision_{int(time.time())}"
+        self.logger.info(f"Making decision for {symbol} - Operation: {operation_id}")
+
+        # Check for essential components (excluding sentiment_model for core logic)
+        if not all([self.forecast_model, self.market_data_service, self.producer, self.redis]):
+            self.logger.error("DecisionModel essential components not fully initialized. Cannot make decision.")
+            return {"success": False, "error": "Decision system not ready", "symbol": symbol, "operation_id": operation_id}
+
+        try:
+            # 1. Fetch Data Directly (Historical Bars Only)
+            self.logger.info(f"Fetching historical market data for {symbol}")
+            historical_bars = await self.market_data_service.get_historical_bars(
+                symbol=symbol,
+                timeframe=self.config.get("data", {}).get("timeframe", "1m"),
+                limit=self.config.get("data", {}).get("limit", 60)
+            )
+
+            if not historical_bars:
+                 self.logger.warning(f"No historical data fetched for {symbol}. Cannot proceed with decision.")
+                 return {"success": False, "error": "No historical data available", "symbol": symbol, "operation_id": operation_id}
+
+            # 2. Run Integrated Forecast Model
+            self.logger.info(f"Running integrated forecast model for {symbol}")
+
+            # Prepare data for ForecastModel (assuming it expects a torch.Tensor)
+            try:
+                # Assuming the LSTM model expects a tensor of shape (batch_size, sequence_length, input_size)
+                # where input_size is 5 (OHLCV)
+                forecast_input_data = torch.tensor(
+                    [[b["open"], b["high"], b["low"], b["close"], b["volume"]] for b in historical_bars],
+                    dtype=torch.float32
+                ).unsqueeze(0) # Add batch dimension
+                self.logger.debug(f"Prepared forecast input data with shape: {forecast_input_data.shape}")
+            except Exception as data_prep_e:
+                 self.logger.error(f"Error preparing forecast input data: {data_prep_e}")
+                 return {"success": False, "error": "Failed to prepare forecast data", "symbol": symbol, "operation_id": operation_id}
+
+            forecast_result = await self.forecast_model.predict(forecast_input_data)
+            self.logger.info(f"Forecast result for {symbol}: {forecast_result}")
+
+            # 3. Apply Deterministic Decision Logic (Based on Forecast Only)
+            self.logger.info(f"Applying deterministic decision logic for {symbol} based on forecast.")
+
+            final_action = "hold"
+            # Confidence score is removed as ForecastModel no longer provides it directly
+            # confidence_score = 0.0
+
+            forecast_direction = forecast_result.get("direction", "neutral")
+            # forecast_confidence = forecast_result.get("confidence", 0.0) # Removed
+
+            # Simple Strategy: Buy if strong upward forecast, Sell if strong downward forecast
+            # Thresholds should be configurable
+            up_threshold = self.config.get("decision_logic", {}).get("up_threshold")
+            down_threshold = self.config.get("decision_logic", {}).get("down_threshold")
+
+            # Validate required configuration parameters for decision logic
+            if up_threshold is None or down_threshold is None:
+                 error_msg = "DecisionModel requires 'up_threshold' and 'down_threshold' in 'decision_logic' configuration."
+                 self.logger.error(error_msg)
+                 return {"success": False, "error": error_msg, "symbol": symbol, "operation_id": operation_id}
+
+
+            # Decision logic based on forecast prediction value relative to thresholds
+            forecast_prediction_value = forecast_result.get("prediction")
+
+            if forecast_prediction_value is None:
+                 self.logger.warning(f"Forecast prediction value is missing for {symbol}. Cannot make decision.")
+                 return {"success": False, "error": "Forecast prediction value missing", "symbol": symbol, "operation_id": operation_id}
+
+
+            if forecast_prediction_value > up_threshold:
+                 final_action = "buy"
+                 # Confidence could be derived from how far the prediction is from the threshold, if needed
+                 # For now, removing explicit confidence score as per ForecastModel change
+            elif forecast_prediction_value < down_threshold:
+                 final_action = "sell"
+                 # Confidence could be derived from how far the prediction is from the threshold, if needed
+                 # For now, removing explicit confidence score as per ForecastModel change
+            else:
+                 final_action = "hold"
+                 # No confidence score for hold in this simplified logic
+
+
+            self.logger.info(f"Final decision for {symbol}: Action={final_action}") # Removed confidence from log
+
+            # 4. Prepare and Publish Result
+            result = {
+                "success": True,
                 "symbol": symbol,
+                "action": final_action,
+                # "confidence": ..., # Removed confidence from result
+                "forecast_result": forecast_result,
                 "operation_id": operation_id,
                 "timestamp": datetime.utcnow().isoformat()
             }
 
-        try:
-            async with aiohttp.ClientSession() as session:
-                loop = asyncio.get_event_loop()
-                
-                # Process state
-                state_vector = await loop.run_in_executor(
-                    self.executor,
-                    lambda: self._process_state(state)
-                )
-                
-                # Convert to tensor
-                state_tensor = torch.tensor(state_vector, dtype=torch.float32).to(self.device)
-                state_tensor = state_tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, state_dim)
-                
-                # Generate decision
-                with torch.no_grad():
-                    action_logits = await loop.run_in_executor(
-                        self.executor,
-                        lambda: self.model(state_tensor)
-                    )
-                    action_probs = torch.softmax(action_logits, dim=-1).cpu().numpy()[0, 0]
-                    action_idx = np.argmax(action_probs)
-                    action = ["buy", "sell", "hold"][action_idx]
-                    confidence = float(action_probs[action_idx])
-                
-                result = {
-                    "success": True,
-                    "symbol": symbol,
-                    "action": action,
-                    "confidence": confidence,
-                    "operation_id": operation_id,
-                    "timestamp": datetime.utcnow().isoformat()
-                }
-                
-                # Generate LLM explanation if requested
-                if explain:
-                    result["explanation"] = await self._generate_explanation(symbol, state, action, confidence)
-                    self.logger.track_llm_usage(tokens=200, model=self.llm_config.get("model"))
-                
-                # Publish to Kafka
+            # Publish to Redis Cache (with expiry)
+            try:
+                self.redis.setex(f"decision:{symbol}", 300, json.dumps(result))
+                self.logger.info(f"Decision for {symbol} cached in Redis.")
+            except Exception as redis_e:
+                self.logger.error(f"Failed to cache decision in Redis for {symbol}: {redis_e}")
+
+            # Publish to Kafka Topic
+            try:
+                topic = f"{self.kafka_config.get('topic_prefix', 'nextg3n-')}decision-events"
                 self.producer.send(
-                    f"{self.kafka_config.get('topic_prefix', 'nextg3n_')}decision_events",
+                    topic,
                     {"event": "decision_made", "data": result}
                 )
-                
-                duration = (time.time() - start_time) * 1000
-                self.logger.timing("decision_model.make_decision_time_ms", duration)
-                self.logger.info(f"Decision made for {symbol}: {action} (confidence: {confidence:.2f})")
-                self.logger.counter("decision_model.decisions_made", 1)
-                return result
-                
+                self.producer.flush()
+                self.logger.info(f"Decision for {symbol} published to Kafka topic {topic}.")
+            except Exception as kafka_e:
+                self.logger.error(f"Failed to publish decision to Kafka for {symbol}: {kafka_e}")
+
+            return result
+
         except Exception as e:
             self.logger.error(f"Error making decision for {symbol}: {e}")
-            self.logger.counter("decision_model.decision_errors", 1)
-            return {
-                "success": False,
-                "error": str(e),
-                "symbol": symbol,
-                "operation_id": operation_id,
-                "timestamp": datetime.utcnow().isoformat()
-            }
+            return {"success": False, "error": str(e), "symbol": symbol, "operation_id": operation_id}
 
-    def _process_state(self, state: Dict[str, Any]) -> np.ndarray:
-        """
-        Process input state into a fixed-size vector.
+    async def shutdown(self):
+        self.logger.info("DecisionModel shutting down...")
+        if self.producer:
+            self.producer.close()
+            self.logger.info("KafkaProducer closed.")
+        if self.redis:
+            self.redis.close()
+            self.logger.info("Redis client closed.")
+        if hasattr(self.market_data_service, 'shutdown'):
+            await self.market_data_service.shutdown()
+            self.logger.info("MarketDataService shutdown.")
+        # SentimentModel shutdown is still included but it's not part of the core loop
+        if hasattr(self.sentiment_model, 'shutdown'):
+            await self.sentiment_model.shutdown()
+            self.logger.info("SentimentModel shutdown.")
+        if hasattr(self.forecast_model, 'shutdown'):
+            await self.forecast_model.shutdown()
+            self.logger.info("ForecastModel shutdown.")
 
-        Args:
-            state: Input state dictionary
-
-        Returns:
-            State vector as numpy array
-        """
-        try:
-            state_dim = self.model_config.get("state_dim", 64)
-            state_vector = np.zeros(state_dim, dtype=np.float32)
-            
-            # Example: Extract features (customize based on actual state structure)
-            price_pred = state.get("price_prediction", {}).get("predicted_price", 0.0)
-            sentiment = state.get("sentiment", {}).get("sentiment_score", 0.0)
-            rsi = state.get("technical_indicators", {}).get("rsi", 50.0)
-            macd = state.get("technical_indicators", {}).get("macd", 0.0)
-            context_score = state.get("context", {}).get("context_score", 0.0)
-            
-            # Fill state vector (simplified example)
-            state_vector[0] = price_pred
-            state_vector[1] = sentiment
-            state_vector[2] = rsi / 100.0
-            state_vector[3] = macd
-            state_vector[4] = context_score
-            
-            return state_vector
-        
-        except Exception as e:
-            self.logger.error(f"Error processing state: {e}")
-            return np.zeros(self.model_config.get("state_dim", 64), dtype=np.float32)
-
-    async def _generate_explanation(self, symbol: str, state: Dict[str, Any], action: str, confidence: float) -> str:
-        """
-        Generate an explanation for the trading decision using OpenRouter LLM.
-
-        Args:
-            symbol: Stock symbol
-            state: Input state dictionary
-            action: Trading action (buy, sell, hold)
-            confidence: Confidence score
-
-        Returns:
-            Explanation text
-        """
-        headers = {
-            "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
-            "Content-Type": "application/json"
-        }
-        state_summary = (
-            f"Price prediction: {state.get('price_prediction', {}).get('predicted_price', 0.0):.2f}, "
-            f"Sentiment: {state.get('sentiment', {}).get('sentiment_score', 0.0):.2f}, "
-            f"RSI: {state.get('technical_indicators', {}).get('rsi', 50.0):.2f}, "
-            f"MACD: {state.get('technical_indicators', {}).get('macd', 0.0):.2f}"
-        )
-        payload = {
-            "model": self.llm_config.get("model", "openai/gpt-4"),
-            "messages": [
-                {"role": "user", "content": f"Explain why a trading decision to {action} {symbol} with confidence {confidence:.2f} was made based on: {state_summary}"}
-            ],
-            "max_tokens": self.llm_config.get("max_tokens", 512),
-            "temperature": self.llm_config.get("temperature", 0.7)
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            for attempt in range(self.llm_config.get("retry_attempts", 3)):
-                try:
-                    async with session.post(
-                        self.llm_config.get("base_url", "https://openrouter.ai/api/v1") + "/chat/completions",
-                        json=payload,
-                        headers=headers
-                    ) as response:
-                        if response.status == 200:
-                            result = await response.json()
-                            return result["choices"][0]["message"]["content"]
-                        else:
-                            await asyncio.sleep(self.llm_config.get("retry_delay", 1000) / 1000)
-                except Exception as e:
-                    if attempt == self.llm_config.get("retry_attempts", 3) - 1:
-                        self.logger.error(f"Failed to generate explanation: {e}")
-                        return "Failed to generate explanation"
-                    await asyncio.sleep(self.llm_config.get("retry_delay", 1000) / 1000)
-        return "Failed to generate explanation"
-
-    def shutdown(self):
-        """
-        Shutdown the DecisionModel and close resources.
-        """
-        self.logger.info("Shutting down DecisionModel")
-        self.executor.shutdown(wait=True)
-        self.producer.close()
-        self.logger.info("Kafka producer closed")
+        self.logger.info("DecisionModel shutdown complete.")

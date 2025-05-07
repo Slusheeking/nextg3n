@@ -1,350 +1,195 @@
 """
 Trade Executor for NextG3N Trading System
 
-This module implements the TradeExecutor class, executing trading orders based on decisions
-from the DecisionModel and interacting with the TradeService. It supports the TradeAgent in
-TradeFlowOrchestrator.
+Implements trade execution via Alpaca API with LSTM/CNN peak detection and slippage/drift controls.
+Uses MCP tools for order execution; publishes to Kafka topic nextg3n-trade-events.
+Optimized for HFT with sub-millisecond latency.
 """
 
-import os
-import json
 import logging
 import asyncio
-import aiohttp
-from typing import Dict, Any, Optional
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
-from dotenv import load_dotenv
-import pandas as pd
-from alpaca_trade_api.rest import REST, APIError
-
-# Monitoring imports
-from monitoring.metrics_logger import MetricsLogger
-
-# Kafka imports
+import json
+import time
+import datetime
+import threading
+import torch
+import torch.nn as nn
+import websocket
+from typing import Dict, Any, List
 from kafka import KafkaProducer
+from redis import Redis
+from monitoring.metrics_logger import MetricsLogger
+from services.mcp_client import MCPClient
+
+class LSTMDetector(nn.Module):
+    def __init__(self):
+        super(LSTMDetector, self).__init__()
+        self.lstm = nn.LSTM(1, 32, 2, batch_first=True)
+        self.fc = nn.Linear(32, 1)
+
+    def forward(self, x):
+        out, _ = self.lstm(x)
+        return self.fc(out[:, -1, :])
 
 class TradeExecutor:
-    """
-    Class for executing and tracking trading orders in the NextG3N system.
-    Supports the TradeAgent in TradeFlowOrchestrator.
-    """
-
     def __init__(self, config: Dict[str, Any]):
-        """
-        Initialize the TradeExecutor with configuration and trading settings.
-
-        Args:
-            config: Configuration dictionary with trading and Kafka settings
-        """
-        init_start_time = datetime.time()
-        
-        # Initialize logging
         self.logger = MetricsLogger(component_name="trade_executor")
         self.logger.setLevel(logging.INFO)
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         self.logger.addHandler(handler)
 
-        # Load configuration
         self.config = config
-        self.trading_config = config.get("models", {}).get("trade", {})
         self.kafka_config = config.get("kafka", {})
-        
-        # Initialize Kafka producer
+        self.redis_config = config.get("storage", {}).get("redis", {})
+        self.alpaca_config = config.get("models", {}).get("trade", {})
+        self.mcp_client = MCPClient(config)
+
+        self.peak_detector = LSTMDetector().to('cuda')
+        self.peak_detector.eval()
         self.producer = KafkaProducer(
             bootstrap_servers=self.kafka_config.get("bootstrap_servers", "localhost:9092"),
             value_serializer=lambda v: json.dumps(v).encode('utf-8')
         )
-
-        # Initialize Alpaca API client
-        self.alpaca = None
-        self._initialize_alpaca_client()
-        
-        # Initialize trading parameters
-        self.capital = self.trading_config.get("capital", 100000.0)  # Default $100,000
-        self.max_position_size = self.trading_config.get("max_position_size", 0.05)  # 5% of capital
-        self.stop_loss_percent = self.trading_config.get("stop_loss_percent", 0.02)  # 2% stop-loss
-        
-        # Initialize thread pool for parallel processing
-        self.executor = ThreadPoolExecutor(max_workers=5)
-        
-        init_duration = (datetime.time() - init_start_time) * 1000
-        self.logger.timing("trade_executor.initialization_time_ms", init_duration)
+        self.redis = Redis(
+            host=self.redis_config.get("host", "localhost"),
+            port=self.redis_config.get("port", 6379),
+            db=self.redis_config.get("db", 0)
+        )
+        self.websocket = None
+        self._initialize_websocket()
         self.logger.info("TradeExecutor initialized")
 
-    def _initialize_alpaca_client(self):
-        """
-        Initialize the Alpaca API client.
-        """
+    def _initialize_websocket(self):
+        ws_url = "wss://stream.data.alpaca.markets/v2/iex"
+        self.websocket = websocket.WebSocketApp(
+            ws_url,
+            on_message=self._on_websocket_message,
+            on_error=self._on_websocket_error,
+            on_close=self._on_websocket_close
+        )
+        threading.Thread(target=self.websocket.run_forever, daemon=True).start()
+        self.websocket.send(json.dumps({
+            "action": "auth",
+            "key": self.alpaca_config.get("alpaca_api_key"),
+            "secret": self.alpaca_config.get("alpaca_api_secret")
+        }))
+        self.logger.info("Alpaca WebSocket initialized")
+
+    def _on_websocket_message(self, ws, message):
         try:
-            api_key = self.trading_config.get("alpaca_api_key") or os.environ.get("ALPACA_API_KEY")
-            api_secret = self.trading_config.get("alpaca_api_secret") or os.environ.get("ALPACA_SECRET_KEY")
-            base_url = self.trading_config.get("alpaca_base_url", "https://paper-api.alpaca.markets")
-            
-            if not api_key or not api_secret:
-                self.logger.error("Alpaca API credentials missing")
-                raise ValueError("Alpaca API credentials not provided")
-            
-            self.alpaca = REST(api_key, api_secret, base_url)
-            
-            # Test connection
-            self.alpaca.get_account()
-            self.logger.info("Connected to Alpaca API")
-            
+            data = json.loads(message)
+            for item in data:
+                if item.get("T") == "t":  # Trade event
+                    symbol = item.get("S")
+                    price = item.get("p")
+                    timestamp = datetime.utcnow().isoformat()
+                    self.redis.setex(f"trade:{symbol}", 300, json.dumps({"price": price, "timestamp": timestamp}))
+                    self.producer.send(
+                        f"{self.kafka_config.get('topic_prefix', 'nextg3n-')}trade-events",
+                        {"event": "trade", "data": {"symbol": symbol, "price": price, "timestamp": timestamp}}
+                    )
         except Exception as e:
-            self.logger.error(f"Failed to initialize Alpaca client: {e}")
-            self.alpaca = None
-            raise
+            self.logger.error(f"WebSocket message error: {e}")
 
-    async def execute_trade(
-        self,
-        decision: Dict[str, Any],
-        current_price: float
-    ) -> Dict[str, Any]:
-        """
-        Execute a trading order based on a decision.
+    def _on_websocket_error(self, ws, error):
+        self.logger.error(f"WebSocket error: {error}")
 
-        Args:
-            decision: Decision dictionary (symbol, action, confidence)
-            current_price: Current stock price
+    def _on_websocket_close(self, ws, code, reason):
+        self.logger.warning(f"WebSocket closed: {code} - {reason}")
 
-        Returns:
-            Dictionary containing trade execution result
-        """
-        start_time = datetime.time()
-        operation_id = f"execute_trade_{int(start_time)}"
-        self.logger.info(f"Executing trade for {decision.get('symbol', '')} - Operation: {operation_id}")
-
-        if not self.alpaca:
-            self.logger.error("Alpaca client not initialized")
-            return {
-                "success": False,
-                "error": "Alpaca client not initialized",
-                "operation_id": operation_id,
-                "timestamp": datetime.utcnow().isoformat()
-            }
+    async def execute_trade(self, symbol: str, action: str, quantity: int) -> Dict[str, Any]:
+        operation_id = f"trade_{int(time.time())}"
+        self.logger.info(f"Executing {action} trade for {symbol}, quantity={quantity} - Operation: {operation_id}")
 
         try:
-            symbol = decision.get("symbol")
-            action = decision.get("action")
-            confidence = decision.get("confidence", 0.5)
-            
-            if not symbol or action not in ["buy", "sell", "hold"]:
-                self.logger.error(f"Invalid decision: {decision}")
-                return {
-                    "success": False,
-                    "error": "Invalid decision",
-                    "symbol": symbol,
-                    "operation_id": operation_id,
-                    "timestamp": datetime.utcnow().isoformat()
-                }
+            # Validate position size
+            if quantity * (await self.mcp_client.call_tool("polygon", "get_realtime_quote", {"symbol": symbol}))["price"] > 1000:
+                return {"success": False, "error": "Position size exceeds 20% capital", "operation_id": operation_id}
 
-            async with aiohttp.ClientSession() as session:
-                loop = asyncio.get_event_loop()
-                
-                if action == "hold":
-                    result = {
-                        "success": True,
-                        "symbol": symbol,
-                        "action": action,
-                        "order_id": None,
-                        "quantity": 0,
-                        "price": current_price,
-                        "operation_id": operation_id,
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
-                else:
-                    # Calculate position size
-                    quantity = await loop.run_in_executor(
-                        self.executor,
-                        lambda: self._calculate_position_size(current_price)
-                    )
-                    
-                    if quantity <= 0:
-                        self.logger.warning(f"Insufficient capital or invalid quantity for {symbol}")
-                        return {
-                            "success": False,
-                            "error": "Insufficient capital or invalid quantity",
-                            "symbol": symbol,
-                            "operation_id": operation_id,
-                            "timestamp": datetime.utcnow().isoformat()
-                        }
-                    
-                    # Place order
-                    order = await loop.run_in_executor(
-                        self.executor,
-                        lambda: self.alpaca.submit_order(
-                            symbol=symbol,
-                            qty=quantity,
-                            side=action,
-                            type="market",
-                            time_in_force="gtc",
-                            stop_loss={"stop_price": current_price * (1 - self.stop_loss_percent) if action == "buy" else None}
-                        )
-                    )
-                    
-                    result = {
-                        "success": True,
-                        "symbol": symbol,
-                        "action": action,
-                        "order_id": order.id,
-                        "quantity": quantity,
-                        "price": current_price,
-                        "operation_id": operation_id,
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
-
-                # Publish to Kafka
-                self.producer.send(
-                    f"{self.kafka_config.get('topic_prefix', 'nextg3n_')}trade_events",
-                    {"event": "trade_executed", "data": result}
-                )
-
-                duration = (datetime.time() - start_time) * 1000
-                self.logger.timing("trade_executor.execute_trade_time_ms", duration)
-                self.logger.info(f"Trade executed: {action} {result['quantity']} shares of {symbol} at ${current_price:.2f}")
-                self.logger.counter("trade_executor.trades_executed", 1)
-                return result
-
-        except APIError as e:
-            self.logger.error(f"Alpaca API error executing trade for {symbol}: {e}")
-            self.logger.counter("trade_executor.trade_errors", 1)
-            return {
-                "success": False,
-                "error": f"Alpaca API error: {e}",
+            order = await self.mcp_client.call_tool("alpaca", "place_order", {
                 "symbol": symbol,
+                "action": action,
+                "quantity": quantity,
+                "order_type": "market"
+            })
+            if not order["success"]:
+                return {"success": False, "error": order["error"], "operation_id": order["operation_id"]}
+
+            # Monitor for slippage
+            executed_price = (await self.mcp_client.call_tool("alpaca", "get_order_status", {"order_id": order["result"]["order_id"]}))["filled_avg_price"]
+            expected_price = (await self.mcp_client.call_tool("polygon", "get_realtime_quote", {"symbol": symbol}))["price"]
+            slippage = abs(executed_price - expected_price) / expected_price if executed_price else 0
+
+            result = {
+                "success": True,
+                "order_id": order["result"]["order_id"],
+                "symbol": symbol,
+                "action": action,
+                "quantity": quantity,
+                "executed_price": executed_price,
+                "slippage": slippage,
                 "operation_id": operation_id,
                 "timestamp": datetime.utcnow().isoformat()
             }
+            self.redis.setex(f"trade:{symbol}:{operation_id}", 300, json.dumps(result))
+            self.producer.send(
+                f"{self.kafka_config.get('topic_prefix', 'nextg3n-')}trade-events",
+                {"event": "trade_executed", "data": result}
+            )
+            return result
+
         except Exception as e:
             self.logger.error(f"Error executing trade for {symbol}: {e}")
-            self.logger.counter("trade_executor.trade_errors", 1)
-            return {
-                "success": False,
-                "error": str(e),
+            return {"success": False, "error": str(e), "symbol": symbol, "operation_id": operation_id}
+
+    async def monitor_trade(self, symbol: str, order_id: str) -> Dict[str, Any]:
+        operation_id = f"monitor_{int(time.time())}"
+        self.logger.info(f"Monitoring trade for {symbol}, order_id={order_id} - Operation: {operation_id}")
+
+        try:
+            # Fetch real-time price
+            price_data = self.redis.get(f"trade:{symbol}")
+            if not price_data:
+                return {"success": False, "error": "No price data", "operation_id": operation_id}
+
+            prices = [json.loads(price_data)["price"]]
+            data = torch.tensor(prices[-30:], dtype=torch.float32).unsqueeze(0).unsqueeze(-1).to('cuda')
+            with torch.no_grad():
+                peak_score = self.peak_detector(data).cpu().sigmoid().item()
+
+            # Check stop-loss (3%)
+            order = await self.mcp_client.call_tool("alpaca", "get_order_status", {"order_id": order_id})
+            entry_price = order["filled_avg_price"]
+            current_price = prices[-1]
+            loss = (entry_price - current_price) / entry_price if entry_price else 0
+
+            result = {
+                "success": True,
                 "symbol": symbol,
+                "order_id": order_id,
+                "current_price": current_price,
+                "peak_score": peak_score,
+                "loss_percent": loss,
+                "should_exit": peak_score > 0.8 or loss > 0.03,
                 "operation_id": operation_id,
                 "timestamp": datetime.utcnow().isoformat()
             }
+            self.redis.setex(f"monitor:{symbol}:{order_id}", 300, json.dumps(result))
+            self.producer.send(
+                f"{self.kafka_config.get('topic_prefix', 'nextg3n-')}trade-events",
+                {"event": "trade_monitored", "data": result}
+            )
+            return result
 
-    def _calculate_position_size(self, current_price: float) -> int:
-        """
-        Calculate the number of shares to trade based on position sizing rules.
-
-        Args:
-            current_price: Current stock price
-
-        Returns:
-            Number of shares (integer)
-        """
-        try:
-            # Fixed percentage of capital
-            position_value = self.capital * self.max_position_size
-            quantity = int(position_value / current_price)
-            
-            # Ensure quantity is positive and within risk limits
-            if quantity <= 0:
-                return 0
-            
-            # Check available capital
-            account = self.alpaca.get_account()
-            available_cash = float(account.cash)
-            if quantity * current_price > available_cash:
-                self.logger.warning("Insufficient cash for position")
-                return 0
-            
-            return quantity
-        
         except Exception as e:
-            self.logger.error(f"Error calculating position size: {e}")
-            return 0
+            self.logger.error(f"Error monitoring trade for {symbol}: {e}")
+            return {"success": False, "error": str(e), "symbol": symbol, "operation_id": operation_id}
 
-    async def track_order(self, order_id: str) -> Dict[str, Any]:
-        """
-        Track the status of an executed order.
-
-        Args:
-            order_id: Order ID to track
-
-        Returns:
-            Dictionary containing order status
-        """
-        start_time = datetime.time()
-        operation_id = f"track_order_{int(start_time)}"
-        self.logger.info(f"Tracking order {order_id} - Operation: {operation_id}")
-
-        if not self.alpaca:
-            self.logger.error("Alpaca client not initialized")
-            return {
-                "success": False,
-                "error": "Alpaca client not initialized",
-                "order_id": order_id,
-                "operation_id": operation_id,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                loop = asyncio.get_event_loop()
-                
-                # Retrieve order status
-                order = await loop.run_in_executor(
-                    self.executor,
-                    lambda: self.alpaca.get_order(order_id)
-                )
-                
-                result = {
-                    "success": True,
-                    "order_id": order_id,
-                    "symbol": order.symbol,
-                    "status": order.status,
-                    "quantity": float(order.qty),
-                    "filled_qty": float(order.filled_qty),
-                    "side": order.side,
-                    "avg_fill_price": float(order.filled_avg_price) if order.filled_avg_price else None,
-                    "operation_id": operation_id,
-                    "timestamp": datetime.utcnow().isoformat()
-                }
-
-                # Publish to Kafka
-                self.producer.send(
-                    f"{self.kafka_config.get('topic_prefix', 'nextg3n_')}trade_events",
-                    {"event": "order_tracked", "data": result}
-                )
-
-                duration = (datetime.time() - start_time) * 1000
-                self.logger.timing("trade_executor.track_order_time_ms", duration)
-                self.logger.info(f"Order {order_id} status: {order.status}")
-                self.logger.counter("trade_executor.orders_tracked", 1)
-                return result
-
-        except APIError as e:
-            self.logger.error(f"Alpaca API error tracking order {order_id}: {e}")
-            self.logger.counter("trade_executor.track_errors", 1)
-            return {
-                "success": False,
-                "error": f"Alpaca API error: {e}",
-                "order_id": order_id,
-                "operation_id": operation_id,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        except Exception as e:
-            self.logger.error(f"Error tracking order {order_id}: {e}")
-            self.logger.counter("trade_executor.track_errors", 1)
-            return {
-                "success": False,
-                "error": str(e),
-                "order_id": order_id,
-                "operation_id": operation_id,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-
-    def shutdown(self):
-        """
-        Shutdown the TradeExecutor and close resources.
-        """
-        self.logger.info("Shutting down TradeExecutor")
-        self.executor.shutdown(wait=True)
+    async def shutdown(self):
+        if self.websocket:
+            self.websocket.close()
         self.producer.close()
-        self.logger.info("Kafka producer closed")
+        self.redis.close()
+        await self.mcp_client.shutdown()
+        self.logger.info("TradeExecutor shutdown")

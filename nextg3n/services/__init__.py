@@ -11,6 +11,7 @@ from .news_service import NewsService
 from .social_service import SocialService
 from .options_service import OptionsService
 from .cache_service import CacheService
+from .mcp_client import MCPClient
 
 __all__ = [
     "MarketDataService",
@@ -19,4 +20,5 @@ __all__ = [
     "SocialService",
     "OptionsService",
     "CacheService",
+    "MCPClient",
 ]

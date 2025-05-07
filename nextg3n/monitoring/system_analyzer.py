@@ -27,7 +27,7 @@ except ImportError:
 from kafka import KafkaProducer
 
 # Monitoring imports
-from monitoring.metrics_logger import MetricsLogger
+from nextg3n.monitoring.metrics_logger import MetricsLogger
 
 class SystemAnalyzer:
     """
@@ -48,7 +48,9 @@ class SystemAnalyzer:
         self.logger = MetricsLogger(component_name="system_analyzer")
         self.logger.setLevel(logging.INFO)
         handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        )
         self.logger.addHandler(handler)
 
         # Load configuration
@@ -69,10 +71,12 @@ class SystemAnalyzer:
             try:
                 pynvml.nvmlInit()
                 self.gpu_count = pynvml.nvmlDeviceGetCount()
-                self.gpu_handles = [pynvml.nvmlDeviceGetHandleByIndex(i) for i in range(self.gpu_count)]
-                self.logger.info(f"Initialized GPU monitoring for {self.gpu_count} GPUs")
+                self.gpu_handles = [
+                    pynvml.nvmlDeviceGetHandleByIndex(i) for i in range(self.gpu_count)
+                ]
+                self.logger.info("Initialized GPU monitoring for %s GPUs", self.gpu_count)
             except pynvml.NVMLError as e:
-                self.logger.warning(f"Failed to initialize GPU monitoring: {e}")
+                self.logger.warning("Failed to initialize GPU monitoring: %s", e)
                 self.gpu_available = False
         
         # Initialize thresholds for anomaly detection
@@ -195,9 +199,15 @@ class SystemAnalyzer:
                 self.logger.gauge("system_analyzer.cpu_percent", cpu_percent)
                 self.logger.gauge("system_analyzer.memory_percent", memory_percent)
                 for gpu in gpu_metrics:
-                    self.logger.gauge(f"system_analyzer.gpu_{gpu['gpu_id']}_utilization", gpu["utilization_percent"])
-                    self.logger.gauge(f"system_analyzer.gpu_{gpu['gpu_id']}_memory_free_percent", gpu["memory_free_percent"])
-                
+                    self.logger.gauge(
+                        "system_analyzer.gpu_%s_utilization", gpu["gpu_id"], gpu["utilization_percent"]
+                    )
+                    self.logger.gauge(
+                        "system_analyzer.gpu_%s_memory_free_percent",
+                        gpu["gpu_id"],
+                        gpu["memory_free_percent"],
+                    )
+
                 duration = (datetime.datetime() - start_time) * 1000
                 self.logger.timing("system_analyzer.collect_metrics_time_ms", duration)
                 self.logger.info("System metrics collected")
@@ -216,18 +226,17 @@ class SystemAnalyzer:
 
     def _aggregate_latency_metrics(self) -> Dict[str, float]:
         """
-        Aggregate latency metrics from MetricsLogger (placeholder).
+        Aggregate latency metrics from MetricsLogger.
 
         Returns:
             Dictionary of latency metrics
         """
-        # Placeholder: Assumes MetricsLogger stores latency metrics
-        # In a real implementation, query MetricsLogger for recent latency data
-        return {
-            "api_call_avg_ms": 50.0,  # Example
-            "model_inference_avg_ms": 200.0,  # Example
-            "trade_execution_avg_ms": 100.0  # Example
-        }
+        latency_metrics = {}
+        # Retrieve latency metrics from MetricsLogger
+        for metric_name, metric_value in self.logger.metrics.items():
+            if "latency" in metric_name:
+                latency_metrics[metric_name] = metric_value
+        return latency_metrics
 
     def detect_anomalies(self, metrics: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
@@ -246,53 +255,79 @@ class SystemAnalyzer:
         try:
             # CPU usage
             if metrics["cpu_percent"] > self.thresholds["cpu_percent"]:
-                anomalies.append({
-                    "metric": "cpu_percent",
-                    "value": metrics["cpu_percent"],
-                    "threshold": self.thresholds["cpu_percent"],
-                    "severity": "high",
-                    "message": f"High CPU usage: {metrics['cpu_percent']}% > {self.thresholds['cpu_percent']}%"
-                })
-            
+                anomalies.append(
+                    {
+                        "metric": "cpu_percent",
+                        "value": metrics["cpu_percent"],
+                        "threshold": self.thresholds["cpu_percent"],
+                        "severity": "high",
+                        "message": (
+                            f"High CPU usage: {metrics['cpu_percent']}% > "
+                            f"{self.thresholds['cpu_percent']}%"
+                        ),
+                    }
+                )
+
             # Memory usage
             if metrics["memory_percent"] > self.thresholds["memory_percent"]:
-                anomalies.append({
-                    "metric": "memory_percent",
-                    "value": metrics["memory_percent"],
-                    "threshold": self.thresholds["memory_percent"],
-                    "severity": "high",
-                    "message": f"High memory usage: {metrics['memory_percent']}% > {self.thresholds['memory_percent']}%"
-                })
-            
+                anomalies.append(
+                    {
+                        "metric": "memory_percent",
+                        "value": metrics["memory_percent"],
+                        "threshold": self.thresholds["memory_percent"],
+                        "severity": "high",
+                        "message": (
+                            f"High memory usage: {metrics['memory_percent']}% > "
+                            f"{self.thresholds['memory_percent']}%"
+                        ),
+                    }
+                )
+
             # GPU metrics
             for gpu in metrics["gpu_metrics"]:
                 if gpu["utilization_percent"] > self.thresholds["gpu_utilization"]:
-                    anomalies.append({
-                        "metric": f"gpu_{gpu['gpu_id']}_utilization",
-                        "value": gpu["utilization_percent"],
-                        "threshold": self.thresholds["gpu_utilization"],
-                        "severity": "medium",
-                        "message": f"High GPU {gpu['gpu_id']} utilization: {gpu['utilization_percent']}% > {self.thresholds['gpu_utilization']}%"
-                    })
+                    anomalies.append(
+                        {
+                            "metric": f"gpu_{gpu['gpu_id']}_utilization",
+                            "value": gpu["utilization_percent"],
+                            "threshold": self.thresholds["gpu_utilization"],
+                            "severity": "medium",
+                            "message": (
+                                f"High GPU {gpu['gpu_id']} utilization: "
+                                f"{gpu['utilization_percent']}% > {self.thresholds['gpu_utilization']}%"
+                            ),
+                        }
+                    )
                 if gpu["memory_free_percent"] < self.thresholds["gpu_memory_free_percent"]:
-                    anomalies.append({
-                        "metric": f"gpu_{gpu['gpu_id']}_memory_free_percent",
-                        "value": gpu["memory_free_percent"],
-                        "threshold": self.thresholds["gpu_memory_free_percent"],
-                        "severity": "high",
-                        "message": f"Low GPU {gpu['gpu_id']} free memory: {gpu['memory_free_percent']}% < {self.thresholds['gpu_memory_free_percent']}%"
-                    })
-            
+                    anomalies.append(
+                        {
+                            "metric": f"gpu_{gpu['gpu_id']}_memory_free_percent",
+                            "value": gpu["memory_free_percent"],
+                            "threshold": self.thresholds["gpu_memory_free_percent"],
+                            "severity": "high",
+                            "message": (
+                                f"Low GPU {gpu['gpu_id']} free memory: "
+                                f"{gpu['memory_free_percent']}% < "
+                                f"{self.thresholds['gpu_memory_free_percent']}%"
+                            ),
+                        }
+                    )
+
             # Latency metrics
             for metric, value in metrics["latency_metrics"].items():
                 if value > self.thresholds["latency_ms"]:
-                    anomalies.append({
-                        "metric": metric,
-                        "value": value,
-                        "threshold": self.thresholds["latency_ms"],
-                        "severity": "medium",
-                        "message": f"High latency for {metric}: {value}ms > {self.thresholds['latency_ms']}ms"
-                    })
+                    anomalies.append(
+                        {
+                            "metric": metric,
+                            "value": value,
+                            "threshold": self.thresholds["latency_ms"],
+                            "severity": "medium",
+                            "message": (
+                                f"High latency for {metric}: {value}ms > "
+                                f"{self.thresholds['latency_ms']}ms"
+                            ),
+                        }
+                    )
 
             self.logger.info(f"Detected {len(anomalies)} anomalies")
             self.logger.counter("system_analyzer.anomalies_detected", len(anomalies))

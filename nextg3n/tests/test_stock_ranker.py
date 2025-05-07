@@ -1,65 +1,40 @@
 """
-Unit tests for the StockRanker class in the NextG3N Trading System.
+Unit tests for StockRanker in NextG3N Trading System
+
+Tests XGBoost and CNN-based stock screening with MCP tools.
 """
 
-import unittest
-from unittest.mock import patch, MagicMock
-from nextg3n.models.stock_ranker.stock_ranker import StockRanker
-import pandas as pd
+import pytest
 import asyncio
+from unittest.mock import AsyncMock, patch
+from models.stock_ranker.stock_ranker import StockRanker
 
-class TestStockRanker(unittest.TestCase):
-    def setUp(self):
-        self.config = {
-            "models": {
-                "stock_ranker": {
-                    "weights": {
-                        "price_prediction": 0.4,
-                        "sentiment_score": 0.3,
-                        "options_sentiment": 0.2,
-                        "technical_score": 0.1
-                    }
-                }
-            },
-            "kafka": {"bootstrap_servers": "localhost:9092"}
+@pytest.mark.asyncio
+class TestStockRanker:
+    @pytest.fixture
+    def config(self):
+        return {
+            "kafka": {"bootstrap_servers": "localhost:9092", "topic_prefix": "nextg3n-"},
+            "storage": {"redis": {"host": "localhost", "port": 6379, "db": 0}}
         }
-        self.stock_ranker = StockRanker(self.config)
-        self.stock_ranker.logger = MagicMock()
 
-    async def test_rank_stocks_success(self):
-        # Test data
-        stock_data = [
-            {
-                "symbol": "AAPL",
-                "price_prediction": {"predicted_price_change": 0.05},
-                "sentiment": {"sentiment_score": 0.7},
-                "options_sentiment": {"sentiment_score": 0.6},
-                "technical_indicators": {"rsi": 70, "macd": 0.1}
-            },
-            {
-                "symbol": "GOOGL",
-                "price_prediction": {"predicted_price_change": 0.03},
-                "sentiment": {"sentiment_score": 0.5},
-                "options_sentiment": {"sentiment_score": 0.4},
-                "technical_indicators": {"rsi": 50, "macd": 0.0}
-            }
-        ]
-        
-        # Run rank_stocks
-        result = await self.stock_ranker.rank_stocks(stock_data)
-        
-        self.assertTrue(result["success"])
-        self.assertEqual(result["stock_count"], 2)
-        self.assertEqual(result["ranked_stocks"][0]["symbol"], "AAPL")  # Higher score
-        self.stock_ranker.logger.info.assert_called()
+    @pytest.fixture
+    def stock_ranker(self, config):
+        return StockRanker(config)
 
-    async def test_rank_stocks_empty_data(self):
-        # Test with empty data
-        result = await self.stock_ranker.rank_stocks([])
-        
-        self.assertFalse(result["success"])
-        self.assertIn("error", result)
-        self.stock_ranker.logger.error.assert_called()
+    async def test_rank_stocks_success(self, stock_ranker):
+        with patch("services.mcp_client.MCPClient.call_tool", side_effect=[
+            AsyncMock(return_value={"success": True, "price": 100.0}),
+            AsyncMock(return_value={"success": True, "bars": [{"high": 102, "low": 98, "close": 100, "volume": 3000000}]}),
+            AsyncMock(return_value={"success": True, "fundamentals": {"pe_ratio": 15, "market_cap": 1000000000}})
+        ]):
+            result = await stock_ranker.rank_stocks(["AAPL", "GOOGL"])
+            assert result["success"]
+            assert len(result["stocks"]) <= 5
+            assert all(s["symbol"] in ["AAPL", "GOOGL"] for s in result["stocks"])
 
-if __name__ == '__main__':
-    unittest.main()
+    async def test_rank_stocks_no_data(self, stock_ranker):
+        with patch("services.mcp_client.MCPClient.call_tool", AsyncMock(return_value={"success": False, "error": "No data"})):
+            result = await stock_ranker.rank_stocks(["AAPL"])
+            assert not result["success"]
+            assert "error" in result
