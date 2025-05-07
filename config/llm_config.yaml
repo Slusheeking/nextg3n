@@ -1,0 +1,36 @@
+<xaiArtifact artifact_id="9e1e48ce-9ef1-4698-8fab-be97c8b4117b" artifact_version_id="bb1115b5-9866-4ef4-8edf-ed5f02f957eb" title="llm_config.yaml" contentType="text/yaml">
+```yaml
+llm:
+  provider: "${LLM_PROVIDER}"
+  model: "${LLM_MODEL}"
+  api_key: "${OPENAI_API_KEY}"
+  anthropic_api_key: "${ANTHROPIC_API_KEY}"
+  rate_limit_per_minute: 20
+  max_tokens: 8192
+  temperature: 0.7
+  context_window: 32000
+redis:
+  host: "${REDIS_HOST}"
+  port: 6379
+  db: 2
+  password: "${REDIS_PASSWORD}"
+  max_retries: 5
+  reconnect_cooldown: 30
+caching:
+  enabled: true
+  ttl: 3600
+retries:
+  max_attempts: 3
+  backoff_factor: 1.5
+security:
+  enable_auth: true
+mcp_endpoints:
+  alpaca: "http://localhost:8000"
+  polygon_rest: "http://localhost:8001"
+  polygon_websocket: "http://localhost:8002"
+  reddit_processor: "http://localhost:8003"
+  redis: "http://localhost:8004"
+  unusual_whales: "http://localhost:8005"
+  yahoo_finance: "http://localhost:8006"
+shutdown:
+  timeout_seconds: 30

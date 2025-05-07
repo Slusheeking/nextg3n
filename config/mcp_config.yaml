@@ -1,75 +1,100 @@
-# MCP Server Configuration
-version: 1.0.0
-
-# Server Registration
 servers:
-  - name: "alpaca"
-    host: "localhost"
+  - name: alpaca
+    type: alpaca
+    host: localhost
     port: 8000
     enabled: true
-    description: "MCP Server for Alpaca LLM Integration"
-    api_key: "${ALPACA_API_KEY}"
-    secret_key: "${ALPACA_SECRET_KEY}"
     auto_start: true
-    
-  - name: "redis"
-    host: "localhost"
+    args:
+      config: "config/alpaca_config.yaml"
+    env:
+      ALPACA_API_KEY: "${ALPACA_API_KEY}"
+      ALPACA_SECRET_KEY: "${ALPACA_SECRET_KEY}"
+  - name: polygon_rest
+    type: polygon_rest
+    host: localhost
     port: 8001
     enabled: true
-    description: "MCP Server for Redis Integration"
     auto_start: true
-    
-  - name: "polygon_websocket"
-    host: "localhost"
+    args:
+      config: "config/polygon_config.yaml"
+    env:
+      POLYGON_API_KEY: "${POLYGON_API_KEY}"
+      VALID_API_KEYS: "${VALID_API_KEYS}"
+  - name: polygon_websocket
+    type: polygon_websocket
+    host: localhost
     port: 8002
     enabled: true
-    description: "MCP Server for Polygon WebSocket Integration"
-    api_key: "${POLYGON_API_KEY}"
     auto_start: true
-    
-  - name: "unusual_whales"
-    host: "localhost"
+    args:
+      config: "config/system_config.yaml"
+    env:
+      POLYGON_API_KEY: "${POLYGON_API_KEY}"
+      VALID_API_KEYS: "${VALID_API_KEYS}"
+  - name: reddit_processor
+    type: reddit_processor
+    host: localhost
     port: 8003
     enabled: true
-    description: "MCP Server for Unusual Whales Options Flow Integration"
-    api_key: "${UNUSUAL_WHALES_API_KEY}"
     auto_start: true
-    
-  - name: "reddit_processor"
-    host: "localhost"
+    args:
+      config: "config/reddit_config.yaml"
+    env:
+      REDDIT_CLIENT_ID: "${REDDIT_CLIENT_ID}"
+      REDDIT_CLIENT_SECRET: "${REDDIT_CLIENT_SECRET}"
+      REDDIT_USERNAME: "${REDDIT_USERNAME}"
+      REDDIT_PASSWORD: "${REDDIT_PASSWORD}"
+      VALID_API_KEYS: "${VALID_API_KEYS}"
+  - name: redis
+    type: redis
+    host: localhost
     port: 8004
     enabled: true
-    description: "MCP Server for Reddit Social Sentiment Integration"
-    client_id: "${REDDIT_CLIENT_ID}"
-    client_secret: "${REDDIT_CLIENT_SECRET}"
     auto_start: true
-    
-  - name: "yahoo_finance"
-    host: "localhost"
+    args:
+      config: "config/redis_config.yaml"
+    env:
+      REDIS_HOST: "${REDIS_HOST}"
+      REDIS_PORT: "${REDIS_PORT}"
+      REDIS_DB: "${REDIS_DB}"
+      VALID_API_KEYS: "${VALID_API_KEYS}"
+  - name: unusual_whales
+    type: unusual_whales
+    host: localhost
     port: 8005
     enabled: true
-    description: "MCP Server for Yahoo Finance News and Market Data Integration"
     auto_start: true
-
-  - name: "polygon_rest"
-    host: "localhost"
+    args:
+      config: "config/unusual_whales_config.yaml"
+    env:
+      UNUSUAL_WHALES_API_KEY: "${UNUSUAL_WHALES_API_KEY}"
+      VALID_API_KEYS: "${VALID_API_KEYS}"
+      ADMIN_API_KEY: "${ADMIN_API_KEY}"
+      REDIS_HOST: "${REDIS_HOST}"
+      REDIS_PORT: "${REDIS_PORT}"
+      REDIS_DB: "${REDIS_DB}"
+  - name: yahoo_finance
+    type: yahoo_finance
+    host: localhost
     port: 8006
     enabled: true
-    description: "MCP Server for Polygon REST API Integration"
-    api_key: "${POLYGON_API_KEY}"
     auto_start: true
-
-# Connection Settings
+    args:
+      config: "config/yahoo_finance_config.yaml"
+    env:
+      REDIS_HOST: "${REDIS_HOST}"
+      REDIS_PORT: "${REDIS_PORT}"
+      REDIS_DB: "${REDIS_DB}"
+      VALID_API_KEYS: "${VALID_API_KEYS}"
 connection:
-  timeout_seconds: 10
-  retry_count: 3
-  retry_delay_seconds: 2
-  health_check_interval_seconds: 60
-
-# Security
+  timeout_seconds: 30
+  retry_attempts: 3
+  retry_delay_seconds: 1
 security:
-  require_authentication: true
-  token_expiry_minutes: 60
-  allowed_origins:
-    - "http://localhost:5000"
-    - "http://localhost:5001"
+  enable_auth: true
+  api_key: "${MCP_API_KEY}"
+health_check:
+  interval_seconds: 60
+  auto_restart: true
+manager_port: 8080
