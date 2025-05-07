@@ -10,11 +10,13 @@ import os
 import json
 import logging
 import asyncio
+import time
 from typing import Dict, Any, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from dotenv import load_dotenv
 import numpy as np
+import aiohttp
 import chromadb
 from chromadb.config import Settings
 import faiss
@@ -68,7 +70,7 @@ class VectorDB:
         # Initialize thread pool for parallel processing
         self.executor = ThreadPoolExecutor(max_workers=5)
         
-        init_duration = (datetime.time() - init_start_time) * 1000
+        init_duration = (time.time() - init_start_time) * 1000
         self.logger.timing("vector_db.initialization_time_ms", init_duration)
         self.logger.info("VectorDB initialized")
 
@@ -134,7 +136,7 @@ class VectorDB:
         Returns:
             Boolean indicating success
         """
-        start_time = datetime.time()
+        start_time = time.time()
         operation_id = f"store_texts_{int(start_time)}"
         self.logger.info(f"Storing {len(texts)} texts in VectorDB - Operation: {operation_id}")
 

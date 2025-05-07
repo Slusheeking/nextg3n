@@ -10,6 +10,7 @@ import os
 import json
 import logging
 import asyncio
+import aiohttp
 from typing import Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -36,7 +37,7 @@ class StockRanker:
         Args:
             config: Configuration dictionary with ranking and Kafka settings
         """
-        init_start_time = time.time()
+        init_start_time = datetime.time()
         
         # Initialize logging
         self.logger = MetricsLogger(component_name="stock_ranker")
@@ -67,7 +68,7 @@ class StockRanker:
         # Initialize thread pool for parallel processing
         self.executor = ThreadPoolExecutor(max_workers=5)
         
-        init_duration = (time.time() - init_start_time) * 1000
+        init_duration = (datetime.time() - init_start_time) * 1000
         self.logger.timing("stock_ranker.initialization_time_ms", init_duration)
         self.logger.info("StockRanker initialized")
 
@@ -84,7 +85,7 @@ class StockRanker:
         Returns:
             Dictionary containing ranked stocks
         """
-        start_time = time.time()
+        start_time = datetime.time()
         operation_id = f"rank_stocks_{int(start_time)}"
         self.logger.info(f"Ranking {len(stock_data)} stocks - Operation: {operation_id}")
 
@@ -112,7 +113,7 @@ class StockRanker:
                 {"event": "stocks_ranked", "data": result}
             )
 
-            duration = (time.time() - start_time) * 1000
+            duration = (datetime.time() - start_time) * 1000
             self.logger.timing("stock_ranker.rank_stocks_time_ms", duration)
             self.logger.info(f"Ranked {len(ranked_stocks)} stocks")
             self.logger.counter("stock_ranker.rankings_completed", len(ranked_stocks))

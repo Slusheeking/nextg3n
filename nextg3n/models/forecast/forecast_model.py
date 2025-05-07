@@ -10,6 +10,7 @@ import os
 import json
 import logging
 import asyncio
+import aiohttp
 from typing import Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -19,6 +20,7 @@ import pandas as pd
 from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
 from pytorch_forecasting.data import GroupNormalizer
 from pytorch_lightning import LightningModule
+import pytorch_lightning as pl
 
 # Monitoring imports
 from monitoring.metrics_logger import MetricsLogger

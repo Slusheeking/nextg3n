@@ -10,6 +10,7 @@ import os
 import json
 import logging
 import asyncio
+import aiohttp
 from typing import Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -41,7 +42,7 @@ class SystemAnalyzer:
         Args:
             config: Configuration dictionary with monitoring and Kafka settings
         """
-        init_start_time = datetime.datetime()
+        init_start_time = datetime.time()
         
         # Initialize logging
         self.logger = MetricsLogger(component_name="system_analyzer")
@@ -90,7 +91,7 @@ class SystemAnalyzer:
         self.running = True
         self.monitor_task = None
         
-        init_duration = (datetime.datetime() - init_start_time) * 1000
+        init_duration = (datetime.time() - init_start_time) * 1000
         self.logger.timing("system_analyzer.initialization_time_ms", init_duration)
         self.logger.info("SystemAnalyzer initialized")
 
@@ -138,7 +139,7 @@ class SystemAnalyzer:
         Returns:
             Dictionary containing system metrics
         """
-        start_time = datetime.datetime()
+        start_time = datetime.time()
         operation_id = f"collect_metrics_{int(start_time)}"
         self.logger.info(f"Collecting system metrics - Operation: {operation_id}")
 
@@ -308,7 +309,7 @@ class SystemAnalyzer:
         Args:
             anomalies: List of anomaly dictionaries
         """
-        operation_id = f"alert_{int(time.time())}"
+        operation_id = f"alert_{int(datetime.time())}"
         self.logger.info(f"Publishing {len(anomalies)} alerts - Operation: {operation_id}")
 
         try:

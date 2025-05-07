@@ -122,3 +122,14 @@ After deployment, verify hardware compatibility:
 1. Check GPU availability:
    ```bash
    nvidia-smi
+
+   lscpu
+free -h
+
+df -h
+
+systemctl status redis kafka
+
+
+
+]

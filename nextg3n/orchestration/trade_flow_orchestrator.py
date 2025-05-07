@@ -1,226 +1,144 @@
 """
 Trade Flow Orchestrator for NextG3N Trading System
 
-This module implements the TradeFlowOrchestrator class, coordinating agents and workflows
-for trading operations, enhanced with AutoGen for LLM-powered agent interactions.
+This module implements the TradeFlowOrchestrator class, coordinating AutoGen agents
+to manage trading workflows, including stock selection, sentiment analysis, prediction,
+context retrieval, trading decisions, training, and backtesting with LLM-driven optimization.
 """
 
-import asyncio
-import logging
+import os
 import json
+import logging
+import asyncio
+import time
 from typing import Dict, Any, List
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from dotenv import load_dotenv
-import yaml
-import os
+from kafka import KafkaConsumer, KafkaProducer
 from autogen import ConversableAgent, GroupChat, GroupChatManager
 
-# System imports
-from nextg3n import (
-    StockRanker,
-    SentimentModel,
-    ForecastModel,
-    ContextRetriever,
-    DecisionModel,
-    TradeExecutor,
-    BacktestEngine,
-    TrainerModel,
-    ChartGenerator,
-    MetricsApi,
-    TradeDashboard,
-    MetricsLogger
-)
+# Monitoring imports
+from monitoring.metrics_logger import MetricsLogger
+
+# Model imports (assumed to exist)
+from models.sentiment.sentiment_model import SentimentModel
+from models.forecast.forecast_model import ForecastModel
+from models.context.context_retriever import ContextRetriever
+from models.decision.decision_model import DecisionModel
+from models.stock_ranker.stock_ranker import StockRanker
+from models.trade.trade_executor import TradeExecutor
+from models.trainer.trainer_model import TrainerModel
+from models.backtest.backtest_engine import BacktestEngine
 
 class TradeFlowOrchestrator:
     """
-    Orchestrates trading workflows and agents in the NextG3N system, using AutoGen for
-    LLM-powered agent interactions.
+    Orchestrates trading workflows using AutoGen agents, integrating LLM-driven training
+    and backtesting for the NextG3N system.
     """
 
     def __init__(self, config: Dict[str, Any]):
         """
-        Initialize the TradeFlowOrchestrator with configuration and system components.
+        Initialize the TradeFlowOrchestrator with configuration.
 
         Args:
-            config: Configuration dictionary with system settings
+            config: Configuration dictionary
         """
-        init_start_time = time.time()
-        
-        # Initialize logging
+        load_dotenv()
         self.logger = MetricsLogger(component_name="trade_flow_orchestrator")
         self.logger.setLevel(logging.INFO)
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         self.logger.addHandler(handler)
 
-        # Load configuration
         self.config = config
-        
-        # Initialize components
-        self.models = self._initialize_models()
-        self.services = self._initialize_services()
-        self.storage = self._initialize_storage()
-        self.monitoring = self._initialize_monitoring()
-        self.visualization = self._initialize_visualization()
-        
-        # Initialize AutoGen agents
-        self.agents = self._initialize_agents()
-        self.group_chat = None
-        self.group_chat_manager = None
-        self._initialize_group_chat()
-        
-        # Initialize thread pool for parallel processing
-        self.executor = ThreadPoolExecutor(max_workers=10)
-        
-        init_duration = (time.time() - init_start_time) * 1000
-        self.logger.timing("trade_flow_orchestrator.initialization_time_ms", init_duration)
-        self.logger.info("TradeFlowOrchestrator initialized")
+        self.kafka_config = config.get("kafka", {})
+        self.llm_config = config.get("llm", {})
 
-    def _initialize_models(self) -> Dict[str, Any]:
-        """
-        Initialize model components.
+        # Initialize Kafka producer
+        self.producer = KafkaProducer(
+            bootstrap_servers=self.kafka_config.get("bootstrap_servers", "localhost:9092"),
+            value_serializer=lambda v: json.dumps(v).encode('utf-8')
+        )
 
-        Returns:
-            Dictionary of initialized models
-        """
-        models = {}
-        model_configs = self.config.get("models", {})
-        if model_configs.get("stock_ranker", {}).get("enabled", True):
-            models["stock_ranker"] = StockRanker(self.config)
-            self.logger.info("Initialized StockRanker")
-        if model_configs.get("sentiment", {}).get("enabled", True):
-            models["sentiment"] = SentimentModel(self.config)
-            self.logger.info("Initialized SentimentModel")
-        if model_configs.get("forecast", {}).get("enabled", True):
-            models["forecast"] = ForecastModel(self.config)
-            self.logger.info("Initialized ForecastModel")
-        if model_configs.get("context", {}).get("enabled", True):
-            models["context"] = ContextRetriever(self.config)
-            self.logger.info("Initialized ContextRetriever")
-        if model_configs.get("decision", {}).get("enabled", True):
-            models["decision"] = DecisionModel(self.config)
-            self.logger.info("Initialized DecisionModel")
-        if model_configs.get("trade", {}).get("enabled", True):
-            models["trade"] = TradeExecutor(self.config)
-            self.logger.info("Initialized TradeExecutor")
-        if model_configs.get("backtest", {}).get("enabled", True):
-            models["backtest"] = BacktestEngine(self.config)
-            self.logger.info("Initialized BacktestEngine")
-        if model_configs.get("trainer", {}).get("enabled", True):
-            models["trainer"] = TrainerModel(self.config)
-            self.logger.info("Initialized TrainerModel")
-        return models
-
-    def _initialize_services(self) -> Dict[str, Any]:
-        """
-        Initialize service components (placeholder).
-
-        Returns:
-            Dictionary of initialized services
-        """
-        return {}
-
-    def _initialize_storage(self) -> Dict[str, Any]:
-        """
-        Initialize storage components (placeholder).
-
-        Returns:
-            Dictionary of initialized storage components
-        """
-        return {}
-
-    def _initialize_monitoring(self) -> Dict[str, Any]:
-        """
-        Initialize monitoring components (placeholder).
-
-        Returns:
-            Dictionary of initialized monitoring components
-        """
-        return {}
-
-    def _initialize_visualization(self) -> Dict[str, Any]:
-        """
-        Initialize visualization components.
-
-        Returns:
-            Dictionary of initialized visualization components
-        """
-        visualization = {}
-        viz_configs = self.config.get("visualization", {})
-        if viz_configs.get("chart_generator", {}).get("enabled", True):
-            visualization["chart_generator"] = ChartGenerator(self.config)
-            self.logger.info("Initialized ChartGenerator")
-        if viz_configs.get("metrics_api", {}).get("enabled", True):
-            visualization["metrics_api"] = MetricsApi(self.config)
-            asyncio.create_task(visualization["metrics_api"].start_server())
-            self.logger.info("Initialized MetricsApi")
-        if viz_configs.get("trade_dashboard", {}).get("enabled", True):
-            visualization["trade_dashboard"] = TradeDashboard(self.config)
-            asyncio.create_task(visualization["trade_dashboard"].start_dashboard())
-            self.logger.info("Initialized TradeDashboard")
-        return visualization
-
-    def _initialize_agents(self) -> Dict[str, ConversableAgent]:
-        """
-        Initialize AutoGen agents with LLM configuration.
-
-        Returns:
-            Dictionary of initialized agents
-        """
-        llm_config = {
-            "model": self.config["llm"]["model"],
-            "api_key": os.getenv("OPENROUTER_API_KEY"),
-            "base_url": self.config["llm"]["base_url"],
-            "max_tokens": self.config["llm"]["max_tokens"],
-            "temperature": self.config["llm"]["temperature"]
+        # Initialize models (placeholder; replace with actual implementations)
+        self.models = {
+            "sentiment": SentimentModel(config),
+            "forecast": ForecastModel(config),
+            "context": ContextRetriever(config),
+            "decision": DecisionModel(config),
+            "stock_ranker": StockRanker(config),
+            "trade": TradeExecutor(config),
+            "trainer": TrainerModel(config),
+            "backtest": BacktestEngine(config)
         }
-        
-        agents = {
+
+        # Initialize AutoGen agents
+        self.agents = {
             "stock_picker": ConversableAgent(
-                name="StockPickerAgent",
-                llm_config=llm_config,
-                system_message="Rank stocks based on provided data."
+                name="StockPicker",
+                llm_config={
+                    "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
+                },
+                system_message="Select promising stocks based on rankings and market data."
             ),
-            "sentiment": ConversableAgent(
-                name="SentimentAgent",
-                llm_config=llm_config,
-                system_message="Analyze sentiment of financial texts."
+            "sentiment_analyzer": ConversableAgent(
+                name="SentimentAnalyzer",
+                llm_config={
+                    "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
+                },
+                system_message="Analyze sentiment from news and social data."
             ),
             "predictor": ConversableAgent(
-                name="PredictorAgent",
-                llm_config=llm_config,
-                system_message="Forecast stock price movements."
+                name="Predictor",
+                llm_config={
+                    "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
+                },
+                system_message="Generate price predictions using ForecastModel."
             ),
-            "context": ConversableAgent(
-                name="ContextAgent",
-                llm_config=llm_config,
-                system_message="Retrieve and summarize relevant context."
+            "context_analyzer": ConversableAgent(
+                name="ContextAnalyzer",
+                llm_config={
+                    "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
+                },
+                system_message="Retrieve and summarize market context."
             ),
-            "trade": ConversableAgent(
-                name="TradeAgent",
-                llm_config=llm_config,
-                system_message="Execute trading decisions."
+            "trade_decider": ConversableAgent(
+                name="TradeDecider",
+                llm_config={
+                    "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
+                },
+                system_message="Make trading decisions based on predictions and context."
             ),
-            "monitor": ConversableAgent(
-                name="MonitorAgent",
-                llm_config=llm_config,
-                system_message="Monitor system performance and generate insights."
+            "trainer": ConversableAgent(
+                name="Trainer",
+                llm_config={
+                    "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
+                },
+                system_message="Train and fine-tune models."
+            ),
+            "hyperparameter_optimizer": ConversableAgent(
+                name="HyperparameterOptimizer",
+                llm_config={
+                    "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
+                },
+                system_message="Optimize model hyperparameters based on training metrics."
+            ),
+            "strategy_generator": ConversableAgent(
+                name="StrategyGenerator",
+                llm_config={
+                    "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
+                },
+                system_message="Generate and refine trading strategies for backtesting."
             ),
             "user_proxy": ConversableAgent(
-                name="UserProxyAgent",
-                llm_config=False,  # No LLM for user proxy
+                name="UserProxy",
+                is_termination_msg=lambda x: x.get("content", "").rstrip().endswith("TERMINATE"),
                 human_input_mode="NEVER",
                 system_message="Proxy for user interactions."
             )
         }
-        
-        return agents
 
-    def _initialize_group_chat(self):
-        """
-        Initialize AutoGen group chat for agent collaboration.
-        """
+        # Initialize group chat
         self.group_chat = GroupChat(
             agents=list(self.agents.values()),
             messages=[],
@@ -229,52 +147,99 @@ class TradeFlowOrchestrator:
         self.group_chat_manager = GroupChatManager(
             groupchat=self.group_chat,
             llm_config={
-                "model": self.config["llm"]["model"],
-                "api_key": os.getenv("OPENROUTER_API_KEY"),
-                "base_url": self.config["llm"]["base_url"],
-                "max_tokens": self.config["llm"]["max_tokens"],
-                "temperature": self.config["llm"]["temperature"]
+                "config_list": [{"model": self.llm_config.get("model", "openai/gpt-4"), "api_key": os.getenv("OPENROUTER_API_KEY")}]
             }
         )
 
-    async def start(self):
+        self.logger.info("TradeFlowOrchestrator initialized")
+
+    async def start_workflow(self, task: str):
         """
-        Start the orchestration process, coordinating agents and workflows.
+        Start a trading workflow using AutoGen agents.
+
+        Args:
+            task: Task description (e.g., "Run daily trading cycle")
         """
-        self.logger.info("Starting TradeFlowOrchestrator")
-        
+        operation_id = f"workflow_{int(time.time())}"
+        self.logger.info(f"Starting workflow: {task}, Operation: {operation_id}")
+
         try:
-            # Example workflow: Coordinate agents to analyze and trade
-            task = """
-            Analyze the market for AAPL:
-            1. Rank stocks using StockRanker.
-            2. Analyze sentiment using SentimentModel.
-            3. Forecast price using ForecastModel.
-            4. Retrieve context using ContextRetriever.
-            5. Make a trading decision using DecisionModel.
-            6. Execute the trade using TradeExecutor.
-            7. Generate visualizations using ChartGenerator and TradeDashboard.
-            """
             await self.group_chat_manager.initiate_chat(
                 self.agents["user_proxy"],
                 message=task
             )
-            
-            self.logger.info("TradeFlowOrchestrator started successfully")
-        
+            self.logger.info(f"Workflow completed: {task}")
         except Exception as e:
-            self.logger.error(f"Error starting TradeFlowOrchestrator: {e}")
-            raise
+            self.logger.error(f"Workflow error: {e}")
+
+    async def consume_kafka_events(self):
+        """
+        Consume Kafka events and trigger agent actions.
+        """
+        operation_id = f"kafka_{int(time.time())}"
+        consumer = KafkaConsumer(
+            f"{self.kafka_config.get('topic_prefix', 'nextg3n-')}trainer-events",
+            f"{self.kafka_config.get('topic_prefix', 'nextg3n-')}backtest-events",
+            bootstrap_servers=self.kafka_config.get("bootstrap_servers", "localhost:9092"),
+            group_id="orchestrator",
+            auto_offset_reset="latest",
+            value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+        )
+
+        self.logger.info("Starting Kafka consumer for trainer and backtest events")
+
+        for message in consumer:
+            try:
+                event = message.value.get("event")
+                data = message.value.get("data")
+                topic = message.topic
+
+                if topic.endswith("trainer-events"):
+                    if event == "model_trained":
+                        self.logger.info(f"Received model_trained event: {data['model_name']}")
+                        # Trigger hyperparameter optimization
+                        await self.agents["hyperparameter_optimizer"].initiate_chat(
+                            self.agents["user_proxy"],
+                            message=f"Optimize hyperparameters for {data['model_name']} based on metrics: {data.get('metrics', {})}"
+                        )
+                    elif event == "model_evaluated":
+                        self.logger.info(f"Received model_evaluated event: {data['model_name']}")
+                        # Trigger retraining if metrics are poor
+                        if data.get("metrics", {}).get("accuracy", 0) < 0.7:
+                            await self.agents["trainer"].initiate_chat(
+                                self.agents["user_proxy"],
+                                message=f"Retrain {data['model_name']} with suggestions: {data.get('llm_suggestions', {})}"
+                            )
+
+                elif topic.endswith("backtest-events"):
+                    if event == "backtest_completed":
+                        self.logger.info(f"Received backtest_completed event: {data['symbol']}")
+                        # Trigger strategy refinement
+                        await self.agents["strategy_generator"].initiate_chat(
+                            self.agents["user_proxy"],
+                            message=f"Refine trading strategy for {data['symbol']} based on backtest: {data}"
+                        )
+                    elif event == "parallel_backtest_completed":
+                        self.logger.info(f"Received parallel_backtest_completed event: {data['total_results']} results")
+                        # Trigger analysis of best strategies
+                        await self.agents["strategy_generator"].initiate_chat(
+                            self.agents["user_proxy"],
+                            message=f"Analyze parallel backtest results: {data}"
+                        )
+
+                # Publish orchestration event
+                self.producer.send(
+                    f"{self.kafka_config.get('topic_prefix', 'nextg3n-')}orchestration-events",
+                    {"event": "agent_action", "data": {"operation_id": operation_id, "topic": topic, "event": event}}
+                )
+
+            except Exception as e:
+                self.logger.error(f"Error processing Kafka event: {e}")
 
     def shutdown(self):
         """
         Shutdown the orchestrator and close resources.
         """
         self.logger.info("Shutting down TradeFlowOrchestrator")
-        self.executor.shutdown(wait=True)
-        for component in list(self.models.values()) + list(self.services.values()) + \
-                        list(self.storage.values()) + list(self.monitoring.values()) + \
-                        list(self.visualization.values()):
-            if hasattr(component, "shutdown"):
-                component.shutdown()
-        self.logger.info("TradeFlowOrchestrator shutdown complete")
+        self.producer.close()
+        self.logger.info("Kafka producer closed")

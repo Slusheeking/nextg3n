@@ -1,82 +1,111 @@
 """
-Unit tests for the TradeFlowOrchestrator class in the NextG3N Trading System.
+Unit tests for TradeFlowOrchestrator in the NextG3N Trading System.
+
+Tests AutoGen agent interactions, Kafka event processing for trainer and backtest events,
+and workflow orchestration with LLM-driven agents.
 """
 
-import unittest
-from unittest.mock import patch, MagicMock, AsyncMock
-from nextg3n.orchestration.trade_flow_orchestrator import TradeFlowOrchestrator
-import asyncio
+import pytest
+import json
+from unittest.mock import AsyncMock, patch
+from datetime import datetime
+from orchestration.trade_flow_orchestrator import TradeFlowOrchestrator
 
-class TestTradeFlowOrchestrator(unittest.TestCase):
-    def setUp(self):
-        self.config = {
-            "models": {
-                "stock_ranker": {"enabled": True},
-                "sentiment": {"enabled": True},
-                "forecast": {"enabled": True},
-                "context": {"enabled": True},
-                "decision": {"enabled": True},
-                "trade": {"enabled": True},
-                "backtest": {"enabled": True},
-                "trainer": {"enabled": True}
+@pytest.mark.asyncio
+class TestTradeFlowOrchestrator:
+    @pytest.fixture
+    def config(self):
+        return {
+            "kafka": {
+                "bootstrap_servers": "localhost:9092",
+                "topic_prefix": "nextg3n-"
             },
-            "visualization": {
-                "chart_generator": {"enabled": True},
-                "metrics_api": {"enabled": True},
-                "trade_dashboard": {"enabled": True, "port": 3050}
-            },
-            "kafka": {"bootstrap_servers": "localhost:9092"},
             "llm": {
-                "enabled": True,
-                "provider": "openrouter",
                 "model": "openai/gpt-4",
-                "max_tokens": 512,
-                "temperature": 0.7,
-                "retry_attempts": 3,
-                "retry_delay": 1000
+                "base_url": "https://openrouter.ai/api/v1",
+                "max_tokens": 512
             }
         }
-        self.orchestrator = TradeFlowOrchestrator(self.config)
-        self.orchestrator.logger = MagicMock()
 
-    @patch('autogen.ConversableAgent')
-    @patch('autogen.GroupChat')
-    @patch('autogen.GroupChatManager')
-    async def test_start_success(self, mock_group_chat_manager, mock_group_chat, mock_agent):
-        # Mock AutoGen components
-        mock_group_chat_instance = MagicMock()
-        mock_group_chat.return_value = mock_group_chat_instance
-        mock_group_chat_manager_instance = AsyncMock()
-        mock_group_chat_manager.return_value = mock_group_chat_manager_instance
-        mock_group_chat_manager_instance.initiate_chat = AsyncMock(return_value=None)
-        
-        # Mock agents
-        mock_agent_instance = MagicMock()
-        mock_agent.return_value = mock_agent_instance
-        
-        # Run start
-        await self.orchestrator.start()
-        
-        self.orchestrator.logger.info.assert_any_call("Starting TradeFlowOrchestrator")
-        self.orchestrator.logger.info.assert_any_call("TradeFlowOrchestrator started successfully")
-        mock_group_chat_manager_instance.initiate_chat.assert_called()
+    @pytest.fixture
+    def orchestrator(self, config):
+        return TradeFlowOrchestrator(config)
 
-    async def test_shutdown_success(self):
-        # Mock shutdown methods
-        for component in list(self.orchestrator.models.values()) + \
-                         list(self.orchestrator.visualization.values()):
-            if hasattr(component, "shutdown"):
-                component.shutdown = MagicMock()
-        
-        # Run shutdown
-        self.orchestrator.shutdown()
-        
-        self.orchestrator.logger.info.assert_any_call("Shutting down TradeFlowOrchestrator")
-        self.orchestrator.logger.info.assert_any_call("TradeFlowOrchestrator shutdown complete")
-        for component in list(self.orchestrator.models.values()) + \
-                         list(self.orchestrator.visualization.values()):
-            if hasattr(component, "shutdown"):
-                component.shutdown.assert_called()
+    async def test_init_agents(self, orchestrator):
+        assert set(orchestrator.agents.keys()) == {
+            "stock_picker", "sentiment_analyzer", "predictor", "context_analyzer",
+            "trade_decider", "trainer", "hyperparameter_optimizer", "strategy_generator",
+            "user_proxy"
+        }
+        assert orchestrator.group_chat_manager is not None
 
-if __name__ == '__main__':
-    unittest.main()
+    @pytest.mark.asyncio
+    async def test_start_workflow_success(self, orchestrator):
+        with patch("autogen.GroupChatManager.initiate_chat", new=AsyncMock()) as mock_chat:
+            await orchestrator.start_workflow("Run daily trading cycle")
+            mock_chat.assert_called_once()
+            assert mock_chat.call_args[1]["message"] == "Run daily trading cycle"
+
+    @pytest.mark.asyncio
+    async def test_consume_trainer_events(self, orchestrator):
+        mock_message = {
+            "value": {
+                "event": "model_trained",
+                "data": {
+                    "model_name": "sentiment",
+                    "metrics": {"accuracy": 0.85, "loss": 0.2},
+                    "operation_id": "test_op",
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+            },
+            "topic": "nextg3n-trainer-events"
+        }
+        with patch("kafka.KafkaConsumer.__iter__", return_value=[mock_message]), \
+             patch("kafka.KafkaConsumer.__next__", return_value=mock_message), \
+             patch("autogen.ConversableAgent.initiate_chat", new=AsyncMock()) as mock_chat, \
+             patch("kafka.KafkaProducer.send") as mock_kafka:
+            await orchestrator.consume_kafka_events()
+            mock_chat.assert_called_once()
+            assert "Optimize hyperparameters" in mock_chat.call_args[1]["message"]
+            mock_kafka.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_consume_backtest_events(self, orchestrator):
+        mock_message = {
+            "value": {
+                "event": "backtest_completed",
+                "data": {
+                    "symbol": "AAPL",
+                    "returns": 5.2,
+                    "win_rate": 60.0,
+                    "sharpe_ratio": 1.2,
+                    "operation_id": "test_op",
+                    "llm_params": {"size": 100, "stop_loss": 0.05}
+                }
+            },
+            "topic": "nextg3n-backtest-events"
+        }
+        with patch("kafka.KafkaConsumer.__iter__", return_value=[mock_message]), \
+             patch("kafka.KafkaConsumer.__next__", return_value=mock_message), \
+             patch("autogen.ConversableAgent.initiate_chat", new=AsyncMock()) as mock_chat, \
+             patch("kafka.KafkaProducer.send") as mock_kafka:
+            await orchestrator.consume_kafka_events()
+            mock_chat.assert_called_once()
+            assert "Refine trading strategy" in mock_chat.call_args[1]["message"]
+            mock_kafka.assert_called_once()
+
+    async def test_consume_invalid_event(self, orchestrator):
+        mock_message = {
+            "value": {
+                "event": "unknown_event",
+                "data": {}
+            },
+            "topic": "nextg3n-trainer-events"
+        }
+        with patch("kafka.KafkaConsumer.__iter__", return_value=[mock_message]), \
+             patch("kafka.KafkaConsumer.__next__", return_value=mock_message), \
+             patch("autogen.ConversableAgent.initiate_chat", new=AsyncMock()) as mock_chat, \
+             patch("kafka.KafkaProducer.send") as mock_kafka:
+            await orchestrator.consume_kafka_events()
+            mock_chat.assert_not_called()
+            mock_kafka.assert_not_called()

@@ -20,8 +20,10 @@ share/python-wheels/
 # Environment
 .env
 venv/
+.venv/
 env/
 *.env.local
+/venv/
 
 # Data and Logs
 *.log
@@ -29,6 +31,7 @@ env/
 *.jsonl
 data/
 logs/
+vector_db_data/
 
 # Temporary Files
 *.bak
@@ -57,4 +60,8 @@ Thumbs.db
 *.zip
 *.tar.gz
 *.rar
-=3.8.0
+=3.1
+start_ngrok.sh
+config/ngrok.yml
+/nextg3n/.venv/
+/nextg3n/venv/

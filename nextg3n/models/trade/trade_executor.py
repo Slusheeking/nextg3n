@@ -10,6 +10,7 @@ import os
 import json
 import logging
 import asyncio
+import aiohttp
 from typing import Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime

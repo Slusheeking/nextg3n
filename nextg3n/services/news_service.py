@@ -11,9 +11,10 @@ import os
 import json
 import logging
 import asyncio
+import time
 from typing import Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import aiohttp
 from kafka import KafkaProducer
@@ -92,6 +93,7 @@ class NewsService:
         # Initialize thread pool for parallel processing
         self.executor = ThreadPoolExecutor(max_workers=5)
         
+        start_time = time.time()
         init_duration = (time.time() - start_time) * 1000
         self.logger.timing("news_service.initialization_time_ms", init_duration)
         self.logger.info("NewsService initialized")

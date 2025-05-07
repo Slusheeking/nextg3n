@@ -4,13 +4,13 @@
 # Kafka configuration for event publishing
 kafka:
   bootstrap_servers: "localhost:9092"
-  topic_prefix: "nextg3n_"
+  topic_prefix: "nextg3n-"
 
 # LLM configuration for OpenRouter
 llm:
   enabled: true
   provider: "openrouter"
-  api_key: ""  # Placeholder: Set via OPENROUTER_API_KEY environment variable
+  api_key: ""  # Set via OPENROUTER_API_KEY environment variable
   base_url: "https://openrouter.ai/api/v1"
   model: "openai/gpt-4"  # Default model; can switch to "anthropic/claude-3", etc.
   max_tokens: 512
@@ -31,7 +31,7 @@ models:
     enabled: true
     model_name: "roberta-base"
     max_length: 512
-    checkpoint_path: ""  # Placeholder: Set to path of pre-trained RoBERTa checkpoint
+    checkpoint_path: ""  # Set to path of pre-trained RoBERTa checkpoint
     batch_size: 16
     learning_rate: 2e-5
     max_epochs: 3
@@ -50,7 +50,7 @@ models:
     reduce_on_plateau_patience: 4
     learning_rate: 0.001
     max_epochs: 10
-    checkpoint_path: ""  # Placeholder: Set to path of pre-trained TFT checkpoint
+    checkpoint_path: ""  # Set to path of pre-trained TFT checkpoint
   context:
     enabled: true
     embedder_model: "all-MiniLM-L6-v2"
@@ -64,48 +64,52 @@ models:
     n_layer: 6
     n_head: 8
     hidden_size: 256
-    checkpoint_path: ""  # Placeholder: Set to path of pre-trained Decision Transformer checkpoint
+    checkpoint_path: ""  # Set to path of pre-trained Decision Transformer checkpoint
   trade:
     enabled: true
     capital: 100000.0
     max_position_size: 0.05  # 5% of capital per trade
     stop_loss_percent: 0.02  # 2% stop-loss
-    alpaca_api_key: ""  # Placeholder: Set via environment variable ALPACA_API_KEY
-    alpaca_api_secret: ""  # Placeholder: Set via environment variable ALPACA_SECRET_KEY
-    alpaca_base_url: "https://paper-api.alpaca.markets"  # Paper trading by default
+    alpaca_api_key: ""  # Set via ALPACA_API_KEY
+    alpaca_api_secret: ""  # Set via ALPACA_SECRET_KEY
+    alpaca_base_url: "https://paper-api.alpaca.markets"  # Paper trading
   backtest:
     enabled: true
     initial_capital: 100000.0
     commission: 0.001
     slippage: 0.0005
+    llm_enabled: true
+    llm_retry_attempts: 3
   trainer:
     enabled: true
     max_epochs: 10
     batch_size: 32
     checkpoint_dir: "./checkpoints"
+    llm_enabled: true
+    llm_retry_attempts: 3
 
 # Services configuration
 services:
   market_data:
     enabled: true
-    provider: "alpaca"  # Placeholder: Set to actual provider (e.g., Alpaca, Yahoo Finance)
-    api_key: ""  # Placeholder: Set via environment variable
-    api_secret: ""  # Placeholder: Set via environment variable
-    base_url: "https://data.alpaca.markets"  # Alpaca data API
+    provider: "alpaca"
+    api_key: ""  # Set via environment variable
+    api_secret: ""  # Set via environment variable
+    base_url: "https://data.alpaca.markets"
   trade:
     enabled: true
-    alpaca_api_key: ""  # Placeholder: Set via environment variable ALPACA_API_KEY
-    alpaca_api_secret: ""  # Placeholder: Set via environment variable ALPACA_SECRET_KEY
+    alpaca_api_key: ""  # Set via ALPACA_API_KEY
+    alpaca_api_secret: ""  # Set via ALPACA_SECRET_KEY
     alpaca_base_url: "https://paper-api.alpaca.markets"
   news:
     enabled: true
-    provider: "newsapi"  # Placeholder: Set to actual provider
-    api_key: ""  # Placeholder: Set via environment variable
+    provider: "newsapi"
+    api_key: ""  # Set via environment variable
   social:
     enabled: true
-    provider: "reddit"  # Placeholder: Set to actual provider (e.g., Twitter, Reddit)
-    api_key: ""  # Placeholder: Set via environment variable
-    api_secret: ""  # Placeholder: Set via environment variable
+    provider: "reddit"
+    api_key: ""  # Set via environment variable
+    api_secret: ""  # Set via environment variable
   cache:
     enabled: true
     redis_host: "localhost"
@@ -127,11 +131,11 @@ storage:
     db: 0
   vector_db:
     enabled: true
-    provider: "chromadb"  # Options: chromadb, faiss
+    provider: "chromadb"
     host: "localhost"
     port: 8001
     collection_name: "nextg3n_vectors"
-    embedding_dim: 384  # Matches all-MiniLM-L6-v2
+    embedding_dim: 384
 
 # Monitoring configuration
 monitoring:
@@ -158,7 +162,7 @@ visualization:
     port: 8000
   trade_dashboard:
     enabled: true
-    host: "localhost"
+    host: "localhost"  # Local host; accessed via ngrok
     port: 3050
     metrics_api_url: "http://localhost:8000"
     chart_dir: "./charts"

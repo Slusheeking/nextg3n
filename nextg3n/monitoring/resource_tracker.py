@@ -10,6 +10,7 @@ import os
 import json
 import logging
 import asyncio
+import aiohttp
 from typing import Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -106,7 +107,7 @@ class ResourceTracker:
         """
         while self.running:
             try:
-                metrics = await self.collect_metrics()
+                metrics = await self.collect_metrics(interval)
                 if metrics.get("success"):
                     # Publish metrics to Kafka
                     self.producer.send(
@@ -121,9 +122,12 @@ class ResourceTracker:
                 self.logger.counter("resource_tracker.track_errors", 1)
                 await asyncio.sleep(interval)
 
-    async def collect_metrics(self) -> Dict[str, Any]:
+    async def collect_metrics(self, interval: float = 30.0) -> Dict[str, Any]:
         """
         Collect resource usage metrics (CPU, memory, GPU, disk, network).
+
+        Args:
+            interval: Tracking interval in seconds (default: 30.0)
 
         Returns:
             Dictionary containing resource metrics

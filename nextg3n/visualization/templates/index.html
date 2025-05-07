@@ -29,12 +29,14 @@
             } catch (error) {
                 console.error('Error updating metrics:', error);
             }
-            setTimeout(updateMetrics, {{ refresh_interval * 1000 }});
+            // Get refresh interval from the body's data attribute
+            const refreshIntervalMs = parseInt(document.body.getAttribute('data-refresh-interval')) || 5000;
+            setTimeout(updateMetrics, refreshIntervalMs);
         }
         window.onload = updateMetrics;
     </script>
 </head>
-<body>
+<body data-refresh-interval="{{ refresh_interval|default(5) * 1000 }}">
     <div class="dashboard-container">
         <h1 class="text-center mb-4">NextG3N Trade Dashboard</h1>
         

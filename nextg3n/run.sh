@@ -2,7 +2,7 @@
 
 # run.sh
 # Run script for NextG3N Trading System
-# Starts Kafka, Redis, ChromaDB, and system processes via PM2
+# Starts Kafka, Redis, ChromaDB, ngrok, and system processes via PM2
 # Run as: bash run.sh
 
 set -e
@@ -14,6 +14,7 @@ KAFKA_DIR="/home/ubuntu/kafka"
 USER="ubuntu"
 LOG_DIR="$NEXTG3N_DIR/logs"
 HEALTH_LOG="$LOG_DIR/health_check.log"
+NGROK_LOG="$LOG_DIR/ngrok.log"
 
 # Log function
 log() {
@@ -68,8 +69,59 @@ else
     log "ChromaDB is already running"
 fi
 
-# Start PM2 processes
-log "Starting PM2 processes..."
+# Start ngrok for front-end services
+log "Starting ngrok for front-end services..."
+if ! pgrep -f "ngrok" > /dev/null; then
+    # Kill any existing ngrok processes
+    pkill -f ngrok || true
+    sleep 2
+    
+    # Start ngrok for metrics API
+    log "Starting ngrok for Metrics API..."
+    ngrok http 8000 > $LOG_DIR/ngrok_metrics.log 2>&1 &
+    sleep 5
+    METRICS_URL=$(grep -o 'https://[^ ]*.ngrok-free.app' $LOG_DIR/ngrok_metrics.log | head -1)
+    
+    # Start ngrok for dashboard
+    log "Starting ngrok for TradeDashboard..."
+    ngrok http 3050 > $NGROK_LOG 2>&1 &
+    sleep 5
+    DASHBOARD_URL=$(grep -o 'https://[^ ]*.ngrok-free.app' $NGROK_LOG | head -1)
+    
+    if [ -n "$DASHBOARD_URL" ]; then
+        log "TradeDashboard accessible at: $DASHBOARD_URL"
+    else
+        log "WARNING: Failed to retrieve dashboard ngrok URL. Check $NGROK_LOG for details."
+    fi
+    
+    if [ -n "$METRICS_URL" ]; then
+        log "Metrics API accessible at: $METRICS_URL"
+    else
+        log "WARNING: Failed to retrieve metrics API ngrok URL. Check $LOG_DIR/ngrok_metrics.log for details."
+    fi
+else
+    log "ngrok is already running"
+fi
+
+# Start services
+log "Starting services..."
+
+# Start metrics API
+log "Starting Metrics API..."
+cd $NEXTG3N_DIR && PYTHONPATH=$NEXTG3N_DIR nohup python start_metrics.py > $LOG_DIR/metrics_api.log 2>&1 &
+METRICS_PID=$!
+log "Metrics API started with PID: $METRICS_PID"
+sleep 2
+
+# Start trade dashboard
+log "Starting Trade Dashboard..."
+cd $NEXTG3N_DIR && PYTHONPATH=$NEXTG3N_DIR nohup python start_dashboard.py > $LOG_DIR/trade_dashboard.log 2>&1 &
+DASHBOARD_PID=$!
+log "Trade Dashboard started with PID: $DASHBOARD_PID"
+sleep 2
+
+# Start other PM2 processes
+log "Starting other PM2 processes..."
 pm2 start $NEXTG3N_DIR/ecosystem.config.js
 pm2 save
 
@@ -93,14 +145,20 @@ echo "1. Monitor system logs:"
 echo "   pm2 logs"
 echo "2. Check health check logs:"
 echo "   tail -f $HEALTH_LOG"
-echo "3. Access TradeDashboard:"
-echo "   http://localhost:3050"
-echo "4. Monitor Kafka topics (e.g., nextg3n_health_events):"
-echo "   $KAFKA_DIR/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic nextg3n_health_events --from-beginning"
-echo "5. If issues arise, check PM2 status:"
+echo "3. Access services via ngrok URLs:"
+echo "   TradeDashboard: $DASHBOARD_URL"
+echo "   Metrics API: $METRICS_URL"
+echo "4. Monitor Kafka topics:"
+echo "   $KAFKA_DIR/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic nextg3n-health-events --from-beginning"
+echo "   $KAFKA_DIR/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic nextg3n-trainer-events --from-beginning"
+echo "   $KAFKA_DIR/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic nextg3n-backtest-events --from-beginning"
+echo "5. Check service logs:"
+echo "   tail -f $LOG_DIR/metrics_api.log"
+echo "   tail -f $LOG_DIR/trade_dashboard.log"
+echo "6. If issues arise, check PM2 status:"
 echo "   pm2 list"
-echo "6. Stop the system:"
-echo "   pm2 stop all"
+echo "7. Stop the system:"
+echo "   pm2 stop all && kill $METRICS_PID $DASHBOARD_PID"
 
 # Deactivate virtual environment
 deactivate

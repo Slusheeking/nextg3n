@@ -10,7 +10,8 @@ import os
 import json
 import logging
 import asyncio
-from typing import Dict, Any
+import time
+from typing import Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from dotenv import load_dotenv
@@ -25,6 +26,9 @@ from monitoring.metrics_logger import MetricsLogger
 
 # Kafka imports
 from kafka import KafkaProducer
+
+# Ngrok import
+from pyngrok import ngrok, conf
 
 class MetricsApiHandler(BaseHTTPRequestHandler):
     """
@@ -53,6 +57,34 @@ class MetricsApiHandler(BaseHTTPRequestHandler):
                 response = asyncio.run(self.metrics_api.get_model_metrics(model_name))
             elif path == "/trading_metrics":
                 response = asyncio.run(self.metrics_api.get_trading_metrics())
+            elif path == "/ngrok":
+                # NGROK ENDPOINT
+                try:
+                    # Use the provided authtoken
+                    NGROK_AUTHTOKEN = "2vB4mEpkOKCPryJJTqcnQZu17mU_2mHUjAc8Gp4egYp8iDVRJ"
+                    # Only set authtoken once per process
+                    if not hasattr(self.metrics_api, "_ngrok_authtoken_set"):
+                        conf.get_default().auth_token = NGROK_AUTHTOKEN
+                        self.metrics_api._ngrok_authtoken_set = True
+
+                    # Only start tunnel once per process
+                    if not hasattr(self.metrics_api, "_ngrok_tunnel") or self.metrics_api._ngrok_tunnel is None:
+                        # Use the API server's port
+                        port = self.metrics_api.port
+                        tunnel = ngrok.connect(port, "http")
+                        self.metrics_api._ngrok_tunnel = tunnel
+                    else:
+                        tunnel = self.metrics_api._ngrok_tunnel
+
+                    response = {
+                        "success": True,
+                        "ngrok_url": tunnel.public_url
+                    }
+                except Exception as e:
+                    response = {
+                        "success": False,
+                        "error": f"Failed to start ngrok tunnel: {str(e)}"
+                    }
             else:
                 response = {"success": False, "error": "Invalid endpoint"}
                 status_code = 404

@@ -16,11 +16,15 @@ import chromadb
 from kafka import KafkaProducer, KafkaConsumer
 import os
 from dotenv import load_dotenv
-from nextg3n.models.sentiment.sentiment_model import SentimentModel
-from nextg3n.models.context.context_retriever import ContextRetriever
-from nextg3n.models.decision.decision_model import DecisionModel
-from nextg3n.orchestration.trade_flow_orchestrator import TradeFlowOrchestrator
-from monitoring.metrics_logger import MetricsLogger
+import json
+import time
+
+# Placeholder imports (replace with actual paths when available)
+# from nextg3n.models.sentiment.sentiment_model import SentimentModel
+# from nextg3n.models.context.context_retriever import ContextRetriever
+# from nextg3n.models.decision.decision_model import DecisionModel
+# from nextg3n.orchestration.trade_flow_orchestrator import TradeFlowOrchestrator
+from .metrics_logger import MetricsLogger
 
 class SystemHealthChecker:
     """
@@ -40,7 +44,8 @@ class SystemHealthChecker:
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         self.logger.addHandler(handler)
-        self.orchestrator = TradeFlowOrchestrator(config)
+        # Placeholder for orchestrator initialization
+        # self.orchestrator = TradeFlowOrchestrator(config)
         self.producer = KafkaProducer(
             bootstrap_servers=config["kafka"].get("bootstrap_servers", "localhost:9092"),
             value_serializer=lambda v: json.dumps(v).encode('utf-8')
@@ -83,7 +88,7 @@ class SystemHealthChecker:
 
         # Publish to Kafka
         self.producer.send(
-            f"{self.config['kafka'].get('topic_prefix', 'nextg3n_')}health_events",
+            f"{self.config['kafka'].get('topic_prefix', 'nextg3n-')}health-events",
             {"event": "health_check", "data": result}
         )
 
@@ -104,6 +109,8 @@ class SystemHealthChecker:
         """Check health of all models."""
         errors = []
         try:
+            # Placeholder for model checks (uncomment when imports are available)
+            """
             # SentimentModel
             sentiment_model = SentimentModel(self.config)
             result = await sentiment_model.analyze_sentiment(["Test news"], use_llm=True)
@@ -139,7 +146,8 @@ class SystemHealthChecker:
                 model = self.orchestrator.models.get(model_name)
                 if not model:
                     errors.append(f"{model_name.capitalize()}Model not initialized")
-
+            """
+            errors.append("Model checks skipped: Placeholder implementation")
         except Exception as e:
             errors.append(f"Model health check failed: {str(e)}")
 
@@ -170,7 +178,6 @@ class SystemHealthChecker:
                         errors.append("NewsAPI connectivity failed")
 
                 # Reddit (placeholder for API check)
-                # Note: Reddit API requires authentication; implement specific endpoint if available
                 errors.append("Reddit API check not implemented")
 
                 # OpenRouter
@@ -231,19 +238,18 @@ class SystemHealthChecker:
         try:
             # Producer
             self.producer.send(
-                f"{self.config['kafka']['topic_prefix']}health_events",
+                f"{self.config['kafka']['topic_prefix']}health-events",
                 {"event": "test", "data": {"test": "health_check"}}
             )
             self.producer.flush()
 
             # Consumer
             consumer = KafkaConsumer(
-                f"{self.config['kafka']['topic_prefix']}health_events",
+                f"{self.config['kafka']['topic_prefix']}health-events",
                 bootstrap_servers=self.config["kafka"]["bootstrap_servers"],
                 auto_offset_reset="latest",
                 group_id="health_check"
             )
-            # Poll for a short time to ensure connectivity
             consumer.poll(timeout_ms=1000)
             consumer.close()
 
@@ -256,14 +262,17 @@ class SystemHealthChecker:
         """Check health of TradeFlowOrchestrator."""
         errors = []
         try:
+            # Placeholder for orchestrator check
+            errors.append("Orchestration check skipped: Placeholder implementation")
+            """
             if not self.orchestrator.agents:
                 errors.append("TradeFlowOrchestrator agents not initialized")
-            # Test a simple AutoGen task
             task = "Health check task"
             await self.orchestrator.group_chat_manager.initiate_chat(
                 self.orchestrator.agents["user_proxy"],
                 message=task
             )
+            """
         except Exception as e:
             errors.append(f"Orchestration health check failed: {str(e)}")
 
@@ -275,12 +284,16 @@ class SystemHealthChecker:
         async with aiohttp.ClientSession() as session:
             try:
                 # TradeDashboard
-                async with session.get(f"http://{self.config['visualization']['trade_dashboard']['host']}:{self.config['visualization']['trade_dashboard']['port']}") as response:
+                async with session.get(
+                    f"http://{self.config['visualization']['trade_dashboard']['host']}:{self.config['visualization']['trade_dashboard']['port']}"
+                ) as response:
                     if response.status != 200:
                         errors.append("TradeDashboard not accessible")
 
                 # MetricsApi
-                async with session.get(f"http://{self.config['visualization']['metrics_api']['host']}:{self.config['visualization']['metrics_api']['port']}/system_metrics") as response:
+                async with session.get(
+                    f"http://{self.config['visualization']['metrics_api']['host']}:{self.config['visualization']['metrics_api']['port']}/system_metrics"
+                ) as response:
                     if response.status != 200:
                         errors.append("MetricsApi not accessible")
 

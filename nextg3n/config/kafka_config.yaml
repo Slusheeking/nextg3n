@@ -11,16 +11,17 @@ batch_size: 16384  # 16KB
 linger_ms: 10
 
 # Topic configuration
-topic_prefix: "nextg3n_"  # Prefix for all topics
+topic_prefix: "nextg3n-"
 topics:
-  ranking_events: "ranking_events"  # StockRanker events
-  sentiment_events: "sentiment_events"  # SentimentModel events
-  forecast_events: "forecast_events"  # ForecastModel events
-  context_events: "context_events"  # ContextRetriever events
-  decision_events: "decision_events"  # DecisionModel events
-  trade_events: "trade_events"  # TradeExecutor events
-  backtest_events: "backtest_events"  # BacktestEngine events
-  trainer_events: "trainer_events"  # TrainerModel events
-  visualization_events: "visualization_events"  # ChartGenerator events
-  metrics_api_events: "metrics_api_events"  # MetricsApi events
-  dashboard_events: "dashboard_events"  # TradeDashboard events
+  ranking-events: "ranking-events"  # StockRanker events
+  sentiment-events: "sentiment-events"  # SentimentModel events
+  forecast-events: "forecast-events"  # ForecastModel events
+  context-events: "context-events"  # ContextRetriever events
+  decision-events: "decision-events"  # DecisionModel events
+  trade-events: "trade-events"  # TradeExecutor events
+  backtest-events: "backtest-events"  # BacktestEngine events
+  trainer-events: "trainer-events"  # TrainerModel events
+  visualization-events: "visualization-events"  # ChartGenerator events
+  metrics-api-events: "metrics-api-events"  # MetricsApi events
+  dashboard-events: "dashboard-events"  # TradeDashboard events
+  health-events: "health-events"  # SystemHealthChecker events

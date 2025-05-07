@@ -61,3 +61,5 @@ Thumbs.db
 *.tar.gz
 *.rar
 =3.1
+/nextg3n/.venv/
+/nextg3n/venv/

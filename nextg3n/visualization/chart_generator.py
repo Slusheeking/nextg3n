@@ -10,6 +10,8 @@ import os
 import json
 import logging
 import asyncio
+import time
+import aiohttp
 from typing import Dict, Any, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -151,6 +153,7 @@ class ChartGenerator:
             File path of the generated chart
         """
         try:
+            start_time = time.time()
             # Process data
             bars = data.get("bars", [])
             df = pd.DataFrame(bars)
@@ -277,6 +280,7 @@ class ChartGenerator:
             File path of the generated chart
         """
         try:
+            start_time = time.time()
             # Process data
             results = sentiment_data.get("results", [])
             df = pd.DataFrame(results)
@@ -381,6 +385,7 @@ class ChartGenerator:
             File path of the generated chart
         """
         try:
+            start_time = time.time()
             # Process data
             df = pd.DataFrame(trade_history)
             df["timestamp"] = pd.to_datetime(df["timestamp"])
