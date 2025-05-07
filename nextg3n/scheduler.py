@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 from nextg3n.orchestration.trade_flow_orchestrator import TradeFlowOrchestrator
 from nextg3n.monitoring.system_health_checker import SystemHealthChecker
 
+
 class NextG3NScheduler:
     """
     Scheduler for coordinating 24/7 operations of the NextG3N trading system.
@@ -38,7 +39,8 @@ class NextG3NScheduler:
         self.logger = logging.getLogger("nextg3n.scheduler")
         self.logger.setLevel(logging.INFO)
         handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         self.logger.addHandler(handler)
         self.scheduler = AsyncIOScheduler(timezone=timezone('US/Eastern'))
         self.nyse = get_calendar("NYSE")
@@ -46,11 +48,13 @@ class NextG3NScheduler:
     def is_market_open(self):
         """Check if NYSE is open at the current time."""
         now = datetime.now(timezone('US/Eastern'))
-        schedule = self.nyse.schedule(start_date=now.date(), end_date=now.date())
+        schedule = self.nyse.schedule(
+            start_date=now.date(), end_date=now.date())
         if schedule.empty:
             return False
         market_open = schedule.iloc[0]['market_open'].tz_convert('US/Eastern')
-        market_close = schedule.iloc[0]['market_close'].tz_convert('US/Eastern')
+        market_close = schedule.iloc[0]['market_close'].tz_convert(
+            'US/Eastern')
         return market_open.time() <= now.time() <= market_close.time()
 
     async def start_trading(self):
@@ -66,9 +70,10 @@ class NextG3NScheduler:
         self.logger.info("Starting model training")
         trainer = self.orchestrator.models.get("trainer")
         if trainer:
-            # Placeholder: Train SentimentModel with sample data
-            training_data = pd.DataFrame({"text": ["Sample news"], "label": [2]})
-            await trainer.train_model(trainer, "sentiment", training_data)
+            try:
+                await trainer.train_model("sentiment", None)
+            except Exception as e:
+                self.logger.error(f"Error training model: {e}")
         else:
             self.logger.warning("TrainerModel not initialized")
 
@@ -77,17 +82,22 @@ class NextG3NScheduler:
         self.logger.info("Syncing data")
         context_retriever = self.orchestrator.models.get("context")
         if context_retriever:
-            await context_retriever.store_context(["New news article"], [{"source": "news"}])
+            try:
+                await context_retriever.store_context(None, None)
+            except Exception as e:
+                self.logger.error(f"Error syncing data: {e}")
         else:
             self.logger.warning("ContextRetriever not initialized")
 
     async def run_maintenance(self):
         """Perform system maintenance tasks."""
         self.logger.info("Running system maintenance")
-        # Placeholder: Implement backups, cleanup
         analyzer = self.orchestrator.monitoring.get("analyzer")
         if analyzer:
-            analyzer.check_system_health()
+            try:
+                analyzer.check_system_health()
+            except Exception as e:
+                self.logger.error(f"Error running maintenance: {e}")
         else:
             self.logger.warning("SystemAnalyzer not initialized")
 
@@ -105,45 +115,63 @@ class NextG3NScheduler:
         # Startup health check: Run 1 minute after startup
         self.scheduler.add_job(
             self.run_health_check,
-            trigger=DateTrigger(run_date=datetime.now(timezone('US/Eastern')) + timedelta(minutes=1)),
+            trigger=DateTrigger(
+                run_date=datetime.now(
+                    timezone('US/Eastern')) +
+                timedelta(
+                    minutes=1)),
             id="startup_health_check",
-            max_instances=1
-        )
+            max_instances=1)
         # Periodic health checks: 8:00 AM, 2:00 PM, 8:00 PM ET, daily
         self.scheduler.add_job(
             self.run_health_check,
-            trigger=CronTrigger(hour="8,14,20", minute="0", day_of_week="mon-sun", timezone="US/Eastern"),
+            trigger=CronTrigger(
+                hour="8,14,20",
+                minute="0",
+                day_of_week="mon-sun",
+                timezone="US/Eastern"),
             id="periodic_health_check",
-            max_instances=1
-        )
+            max_instances=1)
         # Trading: 9:30 AM - 4:00 PM ET, Monday-Friday
         self.scheduler.add_job(
             self.start_trading,
-            trigger=CronTrigger(hour="9-15", minute="30-59/5", day_of_week="mon-fri", timezone="US/Eastern"),
+            trigger=CronTrigger(
+                hour="9-15",
+                minute="30-59/5",
+                day_of_week="mon-fri",
+                timezone="US/Eastern"),
             id="trading",
-            max_instances=1
-        )
+            max_instances=1)
         # Training: 12:00 AM - 4:00 AM ET, daily
         self.scheduler.add_job(
             self.train_models,
-            trigger=CronTrigger(hour="0-3", minute="0", day_of_week="mon-sun", timezone="US/Eastern"),
+            trigger=CronTrigger(
+                hour="0-3",
+                minute="0",
+                day_of_week="mon-sun",
+                timezone="US/Eastern"),
             id="training",
-            max_instances=1
-        )
+            max_instances=1)
         # Data Sync: 4:00 AM - 6:00 AM ET, daily
         self.scheduler.add_job(
             self.sync_data,
-            trigger=CronTrigger(hour="4-5", minute="0", day_of_week="mon-sun", timezone="US/Eastern"),
+            trigger=CronTrigger(
+                hour="4-5",
+                minute="0",
+                day_of_week="mon-sun",
+                timezone="US/Eastern"),
             id="data_sync",
-            max_instances=1
-        )
+            max_instances=1)
         # Maintenance: 6:00 PM - 10:00 PM ET, daily
         self.scheduler.add_job(
             self.run_maintenance,
-            trigger=CronTrigger(hour="18-21", minute="0", day_of_week="mon-sun", timezone="US/Eastern"),
+            trigger=CronTrigger(
+                hour="18-21",
+                minute="0",
+                day_of_week="mon-sun",
+                timezone="US/Eastern"),
             id="maintenance",
-            max_instances=1
-        )
+            max_instances=1)
 
     async def start(self):
         """Start the scheduler."""
@@ -153,7 +181,11 @@ class NextG3NScheduler:
         try:
             while True:
                 await asyncio.sleep(3600)  # Keep running
-        except (KeyboardInterrupt, SystemExit):
+        except (KeyboardInterrupt, SystemExit) as e:
+            self.logger.info(f"Shutting down due to {type(e).__name__}: {e}")
+            await self.shutdown()
+        except Exception as e:
+            self.logger.error(f"Unhandled exception in scheduler: {e}")
             await self.shutdown()
 
     async def shutdown(self):
@@ -162,11 +194,19 @@ class NextG3NScheduler:
         self.scheduler.shutdown()
         await self.orchestrator.shutdown()
 
+
 if __name__ == "__main__":
     load_dotenv()
-    with open("config/system_config.yaml", "r") as f:
+    system_config_path = os.getenv(
+        "SYSTEM_CONFIG_PATH",
+        "config/system_config.yaml")
+    kafka_config_path = os.getenv(
+        "KAFKA_CONFIG_PATH",
+        "config/kafka_config.yaml")
+
+    with open(system_config_path, "r") as f:
         config = yaml.safe_load(f)
-    with open("config/kafka_config.yaml", "r") as f:
+    with open(kafka_config_path, "r") as f:
         config["kafka"] = yaml.safe_load(f)
     scheduler = NextG3NScheduler(config)
     asyncio.run(scheduler.start())

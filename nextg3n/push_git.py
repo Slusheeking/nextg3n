@@ -6,18 +6,27 @@ Performs: git status, git add, git commit with timestamp, and git push.
 
 import subprocess
 import datetime
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
 def run_command(command):
     """Run a shell command and return the output."""
-    print(f"Executing: {command}")
-    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    logger.info(f"Executing: {command}")
+    result = subprocess.run(
+        command,
+        shell=True,
+        capture_output=True,
+        text=True)
 
     if result.stdout:
-        print(f"Output:\n{result.stdout}")
+        logger.info(f"Output:\n{result.stdout}")
 
     if result.stderr and result.returncode != 0:
-        print(f"Error:\n{result.stderr}")
+        logger.error(f"Error:\n{result.stderr}")
         raise Exception(f"Command failed with exit code {result.returncode}")
 
     return result.stdout
@@ -27,16 +36,16 @@ def main():
     """Main function to execute git commands."""
     try:
         # Get current git status
-        print("\n--- Checking Git Status ---")
+        logger.info("\n--- Checking Git Status ---")
         status_output = run_command("git status")
 
         # Check if there are changes to commit
         if "nothing to commit, working tree clean" in status_output:
-            print("No changes to commit. Exiting.")
+            logger.info("No changes to commit. Exiting.")
             return
 
         # Add all changes
-        print("\n--- Adding All Changes ---")
+        logger.info("\n--- Adding All Changes ---")
         run_command("git add .")
 
         # Create commit message with timestamp
@@ -44,17 +53,17 @@ def main():
         commit_message = f"Automated update: {timestamp}"
 
         # Commit changes
-        print(f"\n--- Committing Changes with message: '{commit_message}' ---")
+        logger.info(f"\n--- Committing Changes with message: '{commit_message}' ---")
         run_command(f'git commit -m "{commit_message}"')
 
         # Push changes
-        print("\n--- Pushing to Remote Repository ---")
+        logger.info("\n--- Pushing to Remote Repository ---")
         run_command("git push")
 
-        print("\n--- Git Operations Completed Successfully ---")
+        logger.info("\n--- Git Operations Completed Successfully ---")
 
     except Exception as e:
-        print(f"\nError occurred: {e}")
+        logger.error(f"\nError occurred: {e}")
         return 1
 
     return 0

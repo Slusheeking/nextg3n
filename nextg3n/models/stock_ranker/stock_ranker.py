@@ -34,7 +34,7 @@ class CNNRanker(nn.Module):
 class StockRanker:
     def __init__(self, config: Dict[str, Any]):
         self.logger = MetricsLogger(component_name="stock_ranker")
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(logging.WARNING)  # Reduce logging level in production
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         self.logger.addHandler(handler)

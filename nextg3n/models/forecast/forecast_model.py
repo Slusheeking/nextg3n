@@ -16,10 +16,15 @@ from typing import Dict, Any, List
 
 from monitoring.metrics_logger import MetricsLogger
 
+
 class LSTMModel(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers):
         super(LSTMModel, self).__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.lstm = nn.LSTM(
+            input_size,
+            hidden_size,
+            num_layers,
+            batch_first=True)
         self.fc = nn.Linear(hidden_size, 1)
 
     def forward(self, x):
@@ -27,21 +32,25 @@ class LSTMModel(nn.Module):
         out = self.fc(out[:, -1, :])
         return out
 
+
 class ForecastModel:
     def __init__(self, config: Dict[str, Any]):
         self.logger = MetricsLogger(component_name="forecast_model")
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(logging.WARNING)  # Reduce logging level in production
         handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
         self.logger.addHandler(handler)
 
         self.config = config
+        self.forecast_config = config.get("forecast", {})
 
         # Initialize the LSTM model and load weights
-        input_size = config.get("input_size")
-        hidden_size = config.get("hidden_size")
-        num_layers = config.get("num_layers")
-        model_path = config.get("model_path")
+        input_size = self.forecast_config.get("input_size")
+        hidden_size = self.forecast_config.get("hidden_size")
+        num_layers = self.forecast_config.get("num_layers")
+        model_path = self.forecast_config.get("model_path")
 
         # Validate required configuration parameters
         if input_size is None or hidden_size is None or num_layers is None or not model_path:
@@ -57,19 +66,23 @@ class ForecastModel:
         try:
             self.model = LSTMModel(input_size, hidden_size, num_layers)
             self.model.load_state_dict(torch.load(model_path))
-            self.model.eval() # Set model to evaluation mode
+            self.model.eval()  # Set model to evaluation mode
 
             # Move model to GPU if available and configured
-            self.device = torch.device("cuda" if torch.cuda.is_available() and config.get("use_gpu", False) else "cpu")
+            self.device = torch.device(
+                "cuda" if torch.cuda.is_available() and self.forecast_config.get(
+                    "use_gpu", False) else "cpu")
             self.model.to(self.device)
-            self.logger.info(f"ForecastModel initialized and model loaded from {model_path} on device: {self.device}")
+            self.logger.info(
+                f"ForecastModel initialized and model loaded from {model_path} on device: {self.device}")
 
         except Exception as e:
-            self.logger.error(f"Failed to initialize ForecastModel or load model: {e}")
-            self.model = None # Ensure model is None on failure
-            self.device = torch.device("cpu") # Ensure device is set even on failure
-            raise # Re-raise the exception after logging
-
+            self.logger.error(
+                f"Failed to initialize ForecastModel or load model: {e}")
+            self.model = None  # Ensure model is None on failure
+            # Ensure device is set even on failure
+            self.device = torch.device("cpu")
+            raise  # Re-raise the exception after logging
 
     async def predict(self, data: torch.Tensor) -> Dict[str, Any]:
         """
@@ -83,16 +96,21 @@ class ForecastModel:
             A dictionary containing the prediction result.
         """
         operation_id = f"forecast_prediction_{int(time.time())}"
-        self.logger.info(f"Predicting price with input data shape: {data.shape} - Operation: {operation_id}")
+        self.logger.info(
+            f"Predicting price with input data shape: {data.shape} - Operation: {operation_id}")
 
         if not self.model:
-            self.logger.error("Forecast model not initialized. Cannot perform prediction.")
-            return {"success": False, "error": "Forecast model not ready", "operation_id": operation_id}
+            self.logger.error(
+                "Forecast model not initialized. Cannot perform prediction.")
+            return {
+                "success": False,
+                "error": "Forecast model not ready",
+                "operation_id": operation_id}
 
         if data is None or data.numel() == 0:
-             self.logger.warning("No input data provided for forecasting.")
-             return {"success": False, "error": "No input data provided", "operation_id": operation_id} # Return failure on no data
-
+            self.logger.warning("No input data provided for forecasting.")
+            return {"success": False, "error": "No input data provided",
+                    "operation_id": operation_id}  # Return failure on no data
 
         try:
             # Move data to the appropriate device
@@ -100,31 +118,23 @@ class ForecastModel:
 
             with torch.no_grad():
                 prediction_tensor = self.model(data)
-                prediction = prediction_tensor.cpu().item() # Get scalar prediction
+                prediction = prediction_tensor.cpu().item()  # Get scalar prediction
 
             # Determine prediction direction based on configurable thresholds
-            up_threshold = self.config.get("up_threshold")
-            down_threshold = self.config.get("down_threshold")
+            up_threshold = self.forecast_config.get("up_threshold")
+            down_threshold = self.forecast_config.get("down_threshold")
 
             if up_threshold is None or down_threshold is None:
-                 error_msg = "ForecastModel prediction requires 'up_threshold' and 'down_threshold' in configuration."
-                 self.logger.error(error_msg)
-                 return {"success": False, "error": error_msg, "operation_id": operation_id}
-
+                error_msg = "ForecastModel prediction requires 'up_threshold' and 'down_threshold' in configuration."
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
 
             prediction_direction = "up" if prediction > up_threshold else "down" if prediction < down_threshold else "neutral"
-
-            # Confidence calculation - Assuming the model output itself is not a direct confidence score.
-            # If your model provides a confidence score, replace this logic.
-            # Otherwise, remove the confidence field if no meaningful metric can be derived.
-            # For production readiness without a specific confidence metric from the model,
-            # we will remove the confidence field to avoid placeholders.
 
             result = {
                 "success": True,
                 "prediction": float(f"{prediction:.4f}"),
                 "direction": prediction_direction,
-                # "confidence": ..., # Removed confidence as no production-ready metric is available
                 "operation_id": operation_id,
                 "timestamp": datetime.utcnow().isoformat()
             }
@@ -134,13 +144,12 @@ class ForecastModel:
 
         except Exception as e:
             self.logger.error(f"Error during forecast prediction: {e}")
-            return {"success": False, "error": str(e), "operation_id": operation_id}
+            return {
+                "success": False,
+                "error": str(e),
+                "operation_id": operation_id}
 
     async def shutdown(self):
         """Shuts down the ForecastModel."""
         self.logger.info("ForecastModel shutdown.")
         # No specific shutdown needed for the model in this context
-
-# Note: This model is designed to be integrated directly into a trading engine
-# and receive processed data (torch.Tensor) as input. It does not handle data fetching, Kafka, or Redis internally.
-# It requires a pre-trained model file and configurable thresholds for prediction direction.

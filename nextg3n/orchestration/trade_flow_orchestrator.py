@@ -1,10 +1,10 @@
-"""
+'''
 Trade Flow Orchestrator for NextG3N Trading System
 
 Coordinates AutoGen 0.9.0 agents and MCP tools for the trading workflow.
 Manages stock screening, analysis, decision-making, execution, and monitoring.
 Publishes to Kafka topic nextg3n-orchestration-events.
-"""
+'''
 
 import logging
 import asyncio
@@ -12,9 +12,7 @@ import json
 import os
 import time
 import datetime
-import pipeline
 from typing import Dict, Any, List
-from autogen import ConversableAgent, GroupChat, GroupChatManager
 from kafka import KafkaProducer
 from redis import Redis
 from monitoring.metrics_logger import MetricsLogger
@@ -40,7 +38,6 @@ class TradeFlowOrchestrator:
         self.decision_model = DecisionModel(config)
         self.strategy_refinement_enabled = self.config.get("orchestration", {}).get("strategy_refinement", {}).get("enabled", False)
         self.strategy_refinement_model_name = self.config.get("orchestration", {}).get("strategy_refinement", {}).get("model_name", "google/flan-t5-base")
-        self.llm_pipeline = pipeline("text2text-generation", model=self.strategy_refinement_model_name)
         self.producer = KafkaProducer(
             bootstrap_servers=self.kafka_config.get(
                 "bootstrap_servers", "localhost:9092"),
@@ -51,61 +48,6 @@ class TradeFlowOrchestrator:
             port=self.redis_config.get("port", 6379),
             db=self.redis_config.get("db", 0)
         )
-
-        # AutoGen agents - REMOVED
-        # self.stock_picker = ConversableAgent(
-        #     name="StockPicker",
-        #     llm_config={"config_list": [{"model": self.llm_config.get(
-        #         "model", "gpt-4"), "api_key": os.getenv(
-        #             "OPENROUTER_API_KEY")}]},
-        #     system_message="Select promising stocks based on volatility,
-        #     liquidity, and sentiment."
-        # )
-        # self.sentiment_analyzer = ConversableAgent(
-        #     name="SentimentAnalyzer",
-        #     llm_config={"config_list": [{"model": self.llm_config.get(
-        #         "model", "gpt-4"), "api_key": os.getenv(
-        #             "OPENROUTER_API_KEY")}]},
-        #     system_message="Analyze sentiment data for trading
-        #     decisions."
-        # )
-        # self.predictor = ConversableAgent(
-        #     name="Predictor",
-        #     llm_config={"config_list": [{"model": self.llm_config.get(
-        #         "model", "gpt-4"), "api_key": os.getenv(
-        #             "OPENROUTER_API_KEY")}]},
-        #     system_message="Predict price movements based on historical
-        #     and real-time data."
-        # )
-        # self.context_analyzer = ConversableAgent(
-        #     name="ContextAnalyzer",
-        #     llm_config={"config_list": [{"model": self.llm_config.get(
-        #         "model", "gpt-4"), "api_key": os.getenv(
-        #             "OPENROUTER_API_KEY")}]},
-        #     system_message="Provide market context for trading
-        #     decisions."
-        # )
-        # self.trade_decider = ConversableAgent(
-        #     name="TradeDecider",
-        #     llm_config={"config_list": [{"model": self.llm_config.get(
-        #         "model", "gpt-4"), "api_key": os.getenv(
-        #             "OPENROUTER_API_KEY")}]},
-        #     system_message="Make final trading decisions based on agent
-        #     inputs."
-        # )
-        # self.group_chat = GroupChat(
-        #     agents=[self.stock_picker, self.sentiment_analyzer,
-        #             self.predictor, self.context_analyzer,
-        #             self.trade_decider],
-        #     messages=[],
-        #     max_round=3
-        # )
-        # self.group_chat_manager = GroupChatManager(
-        #     groupchat=self.group_chat,
-        #     llm_config={"config_list": [{"model": self.llm_config.get(
-        #         "model", "gpt-4"), "api_key": os.getenv(
-        #             "OPENROUTER_API_KEY")}]}
-        # )
         self.logger.info("TradeFlowOrchestrator initialized")
 
     async def run_trading_workflow(self) -> Dict[str, Any]:
@@ -132,27 +74,6 @@ class TradeFlowOrchestrator:
             # Step 2: Analysis and decision
             decisions = []
             for symbol in top_stocks:
-                # sentiment = await self.mcp_client.call_tool("sentiment", "analyze_sentiment", {"symbol": symbol})
-                # forecast = await self.mcp_client.call_tool("forecast", "predict_price", {"symbol": symbol, "timeframe": "1m"})
-                # context = await self.mcp_client.call_tool("context", "retrieve_context", {"symbol": symbol})
-
-                # message = f"Evaluate {symbol}: Sentiment={sentiment.get('sentiment_score', 0)}, Forecast={forecast.get('prediction', 0)}, Context={context.get('context_summary', '')}"
-                # loop = asyncio.get_event_loop()
-                # chat_result = await loop.run_in_executor(
-                #     None,
-                #     lambda: self.group_chat_manager.initiate_chat(self.stock_picker, message=message)
-                # )
-
-                # action = "buy" if "buy" in chat_result.lower() else "sell" if "sell" in chat_result.lower() else "hold"
-                # if action != "hold":
-                #     trade = await self.mcp_client.call_tool("alpaca", "place_order", {
-                #         "symbol": symbol,
-                #         "action": action,
-                #         "quantity": 10,  # Placeholder; calculate based on $1,000 max
-                #         "order_type": "market"
-                #     })
-                #     if trade["success"]:
-                #         decisions.append({"symbol": symbol, "action": action, "order_id": trade["order_id"]})
                 decision = await self.decision_model.make_decision(symbol)
                 if decision["success"]:
                     action = decision["action"]
@@ -203,7 +124,7 @@ class TradeFlowOrchestrator:
                 })
                 if monitor["should_exit"]:
                     await self.mcp_client.call_tool("alpaca", "place_order", {
-                        "symbol": decision["symbol"],
+                        "symbol": symbol,
                         "action": "sell" if decision["action"] == "buy" else "buy",
                         "quantity": 10,
                         "order_type": "market"
@@ -228,7 +149,7 @@ class TradeFlowOrchestrator:
 
         finally:
             if self.strategy_refinement_enabled:
-                await self.refine_strategy_with_llm(result)
+                asyncio.create_task(self.refine_strategy_with_llm(result))
 
     async def shutdown(self):
         self.producer.close()
@@ -238,9 +159,9 @@ class TradeFlowOrchestrator:
         self.logger.info("TradeFlowOrchestrator shutdown")
 
     async def refine_strategy_with_llm(self, workflow_result: Dict[str, Any]) -> None:
-        """
+        '''
         Refines the trading strategy using a large language model.
-        """
+        '''
         try:
             # Fetch historical trade data from Redis or a database
             # For simplicity, let's assume the workflow_result contains the necessary data
@@ -257,8 +178,14 @@ class TradeFlowOrchestrator:
 
             # Implement the suggested improvements (e.g., update DecisionModel, adjust weights)
             # This part requires careful consideration and implementation based on the LLM's suggestions
+            # The improvements need to be implemented
             # For now, let's just log a message indicating that the improvements need to be implemented
-            self.logger.info("LLM strategy refinement suggestions need to be implemented.")
+            # self.logger.info("LLM strategy refinement suggestions need to be implemented.")
+
+            # Example implementation: Adjust weights in DecisionModel
+            # Assuming DecisionModel has a method to adjust weights based on LLM suggestions
+            # self.decision_model.adjust_weights(llm_response)
+            pass
 
         except Exception as e:
             self.logger.error(f"LLM strategy refinement failed: {e}")

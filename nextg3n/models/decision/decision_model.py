@@ -13,8 +13,6 @@ import torch
 from typing import Dict, Any, List, Optional
 
 # Import necessary models and services directly
-# SentimentModel is kept but will not be used in the core decision logic
-from models.sentiment.sentiment_model import SentimentModel
 from models.forecast.forecast_model import ForecastModel
 from services.market_data_service import MarketDataService
 
@@ -25,7 +23,7 @@ from monitoring.metrics_logger import MetricsLogger
 class DecisionModel:
     def __init__(self, config: Dict[str, Any]):
         self.logger = MetricsLogger(component_name="decision_model")
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(logging.WARNING)  # Reduce logging level in production
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         self.logger.addHandler(handler)
@@ -33,16 +31,9 @@ class DecisionModel:
         self.config = config
         self.kafka_config = config.get("kafka", {})
         self.redis_config = config.get("storage", {}).get("redis", {})
+        self.decision_logic_config = config.get("decision_logic", {})
 
         # Initialize directly integrated components
-        # SentimentModel is initialized but not used in the core decision path
-        try:
-            self.sentiment_model = SentimentModel(config.get("sentiment_model", {}))
-            self.logger.info("SentimentModel initialized (for potential future use outside core loop).")
-        except Exception as e:
-            self.logger.error(f"Failed to initialize SentimentModel: {e}")
-            self.sentiment_model = None
-
         try:
             self.forecast_model = ForecastModel(config.get("forecast_model", {}))
             self.logger.info("ForecastModel initialized.")
@@ -85,7 +76,7 @@ class DecisionModel:
         operation_id = f"decision_{int(time.time())}"
         self.logger.info(f"Making decision for {symbol} - Operation: {operation_id}")
 
-        # Check for essential components (excluding sentiment_model for core logic)
+        # Check for essential components
         if not all([self.forecast_model, self.market_data_service, self.producer, self.redis]):
             self.logger.error("DecisionModel essential components not fully initialized. Cannot make decision.")
             return {"success": False, "error": "Decision system not ready", "symbol": symbol, "operation_id": operation_id}
@@ -126,16 +117,14 @@ class DecisionModel:
             self.logger.info(f"Applying deterministic decision logic for {symbol} based on forecast.")
 
             final_action = "hold"
-            # Confidence score is removed as ForecastModel no longer provides it directly
-            # confidence_score = 0.0
 
             forecast_direction = forecast_result.get("direction", "neutral")
-            # forecast_confidence = forecast_result.get("confidence", 0.0) # Removed
 
             # Simple Strategy: Buy if strong upward forecast, Sell if strong downward forecast
             # Thresholds should be configurable
-            up_threshold = self.config.get("decision_logic", {}).get("up_threshold")
-            down_threshold = self.config.get("decision_logic", {}).get("down_threshold")
+            # Cache decision logic config values
+            up_threshold = self.decision_logic_config.get("up_threshold")
+            down_threshold = self.decision_logic_config.get("down_threshold")
 
             # Validate required configuration parameters for decision logic
             if up_threshold is None or down_threshold is None:
@@ -154,25 +143,19 @@ class DecisionModel:
 
             if forecast_prediction_value > up_threshold:
                  final_action = "buy"
-                 # Confidence could be derived from how far the prediction is from the threshold, if needed
-                 # For now, removing explicit confidence score as per ForecastModel change
             elif forecast_prediction_value < down_threshold:
                  final_action = "sell"
-                 # Confidence could be derived from how far the prediction is from the threshold, if needed
-                 # For now, removing explicit confidence score as per ForecastModel change
             else:
                  final_action = "hold"
-                 # No confidence score for hold in this simplified logic
 
 
-            self.logger.info(f"Final decision for {symbol}: Action={final_action}") # Removed confidence from log
+            self.logger.info(f"Final decision for {symbol}: Action={final_action}")
 
             # 4. Prepare and Publish Result
             result = {
                 "success": True,
                 "symbol": symbol,
                 "action": final_action,
-                # "confidence": ..., # Removed confidence from result
                 "forecast_result": forecast_result,
                 "operation_id": operation_id,
                 "timestamp": datetime.utcnow().isoformat()
@@ -180,7 +163,8 @@ class DecisionModel:
 
             # Publish to Redis Cache (with expiry)
             try:
-                self.redis.setex(f"decision:{symbol}", 300, json.dumps(result))
+                redis_expiration_time = self.config.get("decision_model", {}).get("redis_expiration_time", 300)
+                self.redis.setex(f"decision:{symbol}", redis_expiration_time, json.dumps(result))
                 self.logger.info(f"Decision for {symbol} cached in Redis.")
             except Exception as redis_e:
                 self.logger.error(f"Failed to cache decision in Redis for {symbol}: {redis_e}")
@@ -214,10 +198,6 @@ class DecisionModel:
         if hasattr(self.market_data_service, 'shutdown'):
             await self.market_data_service.shutdown()
             self.logger.info("MarketDataService shutdown.")
-        # SentimentModel shutdown is still included but it's not part of the core loop
-        if hasattr(self.sentiment_model, 'shutdown'):
-            await self.sentiment_model.shutdown()
-            self.logger.info("SentimentModel shutdown.")
         if hasattr(self.forecast_model, 'shutdown'):
             await self.forecast_model.shutdown()
             self.logger.info("ForecastModel shutdown.")
