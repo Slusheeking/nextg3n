@@ -16,6 +16,10 @@ sdist/
 var/
 wheels/
 share/python-wheels/
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
 
 # Environment
 .env
@@ -24,6 +28,7 @@ venv/
 env/
 *.env.local
 /venv/
+.python-version
 
 # Data and Logs
 *.log
@@ -32,6 +37,8 @@ env/
 data/
 logs/
 vector_db_data/
+*.dump
+*.rdb
 
 # Temporary Files
 *.bak
@@ -60,6 +67,23 @@ Thumbs.db
 *.zip
 *.tar.gz
 *.rar
-=3.1
-/nextg3n/.venv/
-/nextg3n/venv/
+start_ngrok.sh
+config/ngrok.yml
+
+# Project specific
+push_git.py
+*.pem
+*.key
+*.crt
+*.cert
+secrets/
+.cache/
+__debug_bin
+*.sock
+
+# Docker
+.dockerignore
+*.env.docker
+docker-volumes/
+
+**/.claude/settings.local.json
