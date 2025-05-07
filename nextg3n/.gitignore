@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+
+# Environment
+.env
+venv/
+env/
+*.env.local
+
+# Data and Logs
+*.log
+*.csv
+*.jsonl
+data/
+logs/
+
+# Temporary Files
+*.bak
+*.swp
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Frontend and Build Artifacts
+node_modules/
+dist/
+build/
+coverage/
+*.min.js
+*.min.css
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Miscellaneous
+*.zip
+*.tar.gz
+*.rar
+=3.8.0

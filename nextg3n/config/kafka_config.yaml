@@ -1,0 +1,26 @@
+# Kafka configuration for the NextG3N Trading System
+# Defines settings for Kafka brokers, topics, and producers
+
+# Kafka broker settings
+bootstrap_servers:
+  - "localhost:9092"  # Default single broker; add more for production cluster
+client_id: "nextg3n_producer"
+retries: 3
+retry_backoff_ms: 1000
+batch_size: 16384  # 16KB
+linger_ms: 10
+
+# Topic configuration
+topic_prefix: "nextg3n_"  # Prefix for all topics
+topics:
+  ranking_events: "ranking_events"  # StockRanker events
+  sentiment_events: "sentiment_events"  # SentimentModel events
+  forecast_events: "forecast_events"  # ForecastModel events
+  context_events: "context_events"  # ContextRetriever events
+  decision_events: "decision_events"  # DecisionModel events
+  trade_events: "trade_events"  # TradeExecutor events
+  backtest_events: "backtest_events"  # BacktestEngine events
+  trainer_events: "trainer_events"  # TrainerModel events
+  visualization_events: "visualization_events"  # ChartGenerator events
+  metrics_api_events: "metrics_api_events"  # MetricsApi events
+  dashboard_events: "dashboard_events"  # TradeDashboard events

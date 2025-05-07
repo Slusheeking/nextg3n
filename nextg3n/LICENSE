@@ -1,0 +1,80 @@
+
+#### Docs Directory
+
+##### 2. `/home/ubuntu/nextg3n/nextg3n/docs/system_architecture.md`
+**Updated**: Detailed architecture description, including health checks and LLM/AutoGen components.
+
+```markdown
+# NextG3N System Architecture
+
+## Overview
+The NextG3N trading system is a modular, high-performance platform for automated stock trading, integrating advanced AI/ML models, large language models (LLMs), and real-time data processing. It achieves ~60-70% prediction accuracy and ~52-62% trading win rate (improving to ~55-65% with fine-tuning) by combining predictive models, sentiment analysis, and decision-making with robust orchestration and monitoring. The system operates 24/7, with scheduled trading, training, data syncing, and health checks, optimized for NVIDIA A100 GPUs on Ubuntu 20.04/22.04 without Docker/Kubernetes.
+
+## Architecture Components
+
+### Models
+- **SentimentModel**: Uses RoBERTa for sentiment analysis of financial texts (news, Reddit posts) and OpenRouter LLM for enhanced scoring. Outputs positive/neutral/negative scores and a sentiment score (-1 to 1).
+- **ContextRetriever**: Employs RAG with Sentence Transformers (all-MiniLM-L6-v2) and ChromaDB/FAISS for context retrieval, with OpenRouter LLM for summarization.
+- **DecisionModel**: Utilizes a Decision Transformer for trading decisions (buy/sell/hold) based on price predictions, sentiment, and technical indicators, with LLM-generated explanations.
+- **ForecastModel**: Temporal Fusion Transformer (TFT) for price forecasting, leveraging historical data and technical indicators.
+- **StockRanker**: Ranks stocks based on weighted scores from predictions, sentiment, and technicals.
+- **TradeExecutor**: Executes trades via Alpaca API, enforcing risk management (e.g., 5% max position size, 2% stop-loss).
+- **BacktestEngine**: Uses Backtrader for strategy backtesting with historical data.
+- **TrainerModel**: Manages model training/fine-tuning, saving checkpoints to `./checkpoints`.
+
+### Services
+- **MarketDataService**: Fetches real-time and historical market data from Alpaca.
+- **TradeService**: Handles trade execution through Alpaca’s paper trading API.
+- **NewsService**: Retrieves financial news from NewsAPI for sentiment analysis.
+- **SocialService**: Collects Reddit posts for social sentiment analysis.
+- **CacheService**: Manages caching with Redis for low-latency data access.
+
+### Orchestration
+- **TradeFlowOrchestrator**: Coordinates workflows using AutoGen for LLM-powered agents (e.g., StockPicker, SentimentAgent). Manages trading, analysis, and visualization tasks via Kafka events.
+
+### Storage
+- **Redis**: Caches real-time data (e.g., market data, sentiment scores) with AOF persistence and 2GB memory limit.
+- **ChromaDB/FAISS**: Stores vector embeddings for RAG-based context retrieval.
+
+### Messaging
+- **Kafka**: Facilitates event-driven communication with topics (`nextg3n_trade_events`, `nextg3n_health_events`, etc.) for models, services, and monitoring.
+
+### Monitoring
+- **MetricsLogger**: Logs system events, LLM usage, and metrics to Kafka and local logs; sends Slack alerts for health check failures.
+- **SystemHealthChecker**: Performs health checks on startup and 3x daily (8:00 AM, 2:00 PM, 8:00 PM ET), verifying models, services, storage, messaging, orchestration, and visualization.
+- **SystemAnalyzer**: Analyzes system performance (placeholder for future metrics).
+- **ResourceTracker**: Monitors CPU/GPU/memory usage.
+
+### Visualization
+- **TradeDashboard**: Flask-based web interface (`http://localhost:3050`) displaying real-time metrics, charts, and LLM-generated market summaries.
+- **ChartGenerator**: Creates price, sentiment, and performance charts using Matplotlib/Plotly.
+- **MetricsApi**: Exposes system and trading metrics via REST API (`http://localhost:8000`).
+
+### Scheduling
+- **Scheduler**: Uses APScheduler to manage 24/7 tasks:
+  - **Trading**: 9:30 AM - 4:00 PM ET, Monday-Friday.
+  - **Training**: 12:00 AM - 4:00 AM ET, daily.
+  - **Data Sync**: 4:00 AM - 6:00 AM ET, daily.
+  - **Maintenance**: 6:00 PM - 10:00 PM ET, daily.
+  - **Health Checks**: Startup and 8:00 AM, 2:00 PM, 8:00 PM ET, daily.
+
+## Key Features
+- **LLM Integration**: OpenRouter enhances sentiment analysis, context summarization, and decision explanations.
+- **AutoGen Orchestration**: Dynamic agent-based workflows for trading and analysis.
+- **Health Checks**: Ensure system reliability with automated checks and Slack alerts.
+- **Real-Time Processing**: Kafka and Redis enable low-latency data handling.
+- **GPU Optimization**: Leverages NVIDIA A100 GPUs for model training and inference.
+- **Modular Design**: Extensible components for models, services, and storage.
+
+## Dependencies
+- **Python**: 3.8+ with dependencies in `requirements.txt` (e.g., `torch`, `transformers`, `pyautogen`).
+- **Node.js**: 16.x for PM2 process management.
+- **Redis**: 6.x with AOF persistence.
+- **Kafka**: 3.7.0 with single-node setup.
+- **ChromaDB**: For vector storage.
+- **External APIs**: Alpaca, NewsAPI, Reddit, OpenRouter.
+
+## Deployment
+- **Install**: Run `sudo bash install.sh` to set up dependencies and services.
+- **Run**: Execute `bash run.sh` to start Kafka, Redis, ChromaDB, and PM2 processes.
+- **Monitor**: Use `pm2 logs`, dashboard, or Kafka topics for real-time insights.
