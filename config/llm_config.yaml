@@ -1,36 +1,215 @@
-<xaiArtifact artifact_id="9e1e48ce-9ef1-4698-8fab-be97c8b4117b" artifact_version_id="bb1115b5-9866-4ef4-8edf-ed5f02f957eb" title="llm_config.yaml" contentType="text/yaml">
-```yaml
+# NextG3N Trading System Configuration
+# This file contains configuration for both Main LLM and Trade LLM components
+
+# System-wide settings
+system:
+  name: "NextG3N Trading System"
+  version: "1.0.0"
+  environment: "production"  # Can be development, staging, or production
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  timezone: "UTC"
+  data_dir: "/opt/nextg3n/data"
+  models_dir: "/opt/nextg3n/models"
+  logs_dir: "/opt/nextg3n/logs"
+
+# Redis configuration
+redis:
+  host: "localhost"
+  port: 6379
+  db: 0
+  password: null  # Set to your Redis password or null if none
+  connection_timeout: 10  # seconds
+  key_prefix: "nextg3n:"
+  channels:
+    market_data: "channel:market_data"
+    position_data: "channel:position_data"
+    market_analysis: "channel:market_analysis"
+    position_monitor: "channel:position_monitor"
+    main_llm: "channel:main_llm"
+    trade_analysis: "channel:trade_analysis"
+    position_sizing: "channel:position_sizing"
+    trade_llm: "channel:trade_llm"
+    trade_order: "channel:trade_order"
+    order_status: "channel:order_status"
+    position_created: "channel:position_created"
+
+# LLM settings shared by both components
 llm:
-  provider: "${LLM_PROVIDER}"
-  model: "${LLM_MODEL}"
-  api_key: "${OPENAI_API_KEY}"
-  anthropic_api_key: "${ANTHROPIC_API_KEY}"
+  provider: "openrouter"  # openai, anthropic, openrouter
+  model: "google/gemini-2.0-flash-001"
+  api_key: ${OPENAI_API_KEY}  # Read from environment
+  anthropic_api_key: ${ANTHROPIC_API_KEY}  # Read from environment
+  openrouter_api_key: ${OPENROUTER_API_KEY}  # Read from environment
   rate_limit_per_minute: 20
   max_tokens: 8192
   temperature: 0.7
   context_window: 32000
-redis:
-  host: "${REDIS_HOST}"
-  port: 6379
-  db: 2
-  password: "${REDIS_PASSWORD}"
-  max_retries: 5
-  reconnect_cooldown: 30
-caching:
+  site_url: "https://nextg3n.ai"
+  site_name: "NextG3N Trading System"
+  retry_attempts: 3
+  retry_delay: 2  # seconds
+  timeout: 30  # seconds
+
+# Main LLM specific configuration
+main_llm:
   enabled: true
-  ttl: 3600
-retries:
-  max_attempts: 3
-  backoff_factor: 1.5
-security:
-  enable_auth: true
-mcp_endpoints:
-  alpaca: "http://localhost:8000"
-  polygon_rest: "http://localhost:8001"
-  polygon_websocket: "http://localhost:8002"
-  reddit_processor: "http://localhost:8003"
-  redis: "http://localhost:8004"
-  unusual_whales: "http://localhost:8005"
-  yahoo_finance: "http://localhost:8006"
-shutdown:
-  timeout_seconds: 30
+  module: "main_llm.MainLLM"
+  system_prompt_file: "/opt/nextg3n/config/main_llm_prompt.txt"
+  confidence_threshold: 0.75
+  max_positions: 5
+  max_position_size_pct: 10.0  # Percentage of portfolio
+  analysis_batch_size: 3  # Number of stocks to analyze in parallel
+  sleep_interval: 1  # seconds between loop iterations
+  position_check_interval: 60  # seconds between position status checks
+  logging:
+    file: "/opt/nextg3n/logs/main_llm.log"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level: "INFO"
+
+# Trade LLM specific configuration
+trade_llm:
+  enabled: true
+  module: "trade_llm.TradeLLM"
+  system_prompt_file: "/opt/nextg3n/config/trade_llm_prompt.txt"
+  confidence_threshold: 0.7
+  position_monitoring_interval: 60  # seconds
+  min_signal_interval: 300  # minimum seconds between evaluations of the same position
+  exit_market_hours_only: true
+  honor_stop_loss: true
+  honor_take_profit: true
+  partial_exit_enabled: true
+  logging:
+    file: "/opt/nextg3n/logs/trade_llm.log"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level: "INFO"
+
+# Alpaca broker configuration
+alpaca:
+  api_key: ${ALPACA_API_KEY}
+  api_secret: ${ALPACA_API_SECRET}
+  base_url: "https://api.alpaca.markets"  # Use paper URL for testing
+  paper_trading: false
+  data_feed: "sip"  # Can be sip or iex
+  webhook_url: "https://nextg3n.ai/webhooks/alpaca"
+  default_order_type: "limit"
+  default_time_in_force: "day"
+  default_extended_hours: false
+  max_retries: 3
+  retry_delay: 2  # seconds
+
+# Market data configuration
+market_data:
+  primary_source: "alpaca"  # Can be alpaca, polygon, yahoo, etc.
+  backup_source: "yahoo"
+  update_interval: 60  # seconds
+  historical_days: 30
+  bars_timeframe: "1Min"
+  market_hours:
+    open: "09:30"  # Eastern Time
+    close: "16:00"  # Eastern Time
+  symbols_universe_file: "/opt/nextg3n/config/universe.txt"
+  max_symbols: 1000
+
+# Trading parameters
+trading:
+  strategy: "ml_enhanced"
+  portfolio:
+    initial_value: 100000
+    max_positions: 5
+    max_position_size_pct: 10.0
+    min_position_size: 500  # Minimum position size in dollars
+  risk:
+    max_drawdown_pct: 5.0
+    default_stop_loss_pct: 2.0
+    default_take_profit_pct: 5.0
+    max_daily_loss_pct: 3.0
+  execution:
+    default_order_type: "limit"
+    default_limit_price_buffer_pct: 0.1
+    allow_partial_fills: true
+  hours:
+    trading_start: "09:30"  # Eastern Time
+    trading_end: "16:00"  # Eastern Time
+    exit_only_after: "15:30"  # Eastern Time (last 30 minutes is exit only)
+    allow_extended_hours: false
+
+# ML Analysis configuration
+ml_analysis:
+  model_path: "/opt/nextg3n/models/market_analysis"
+  update_interval: 3600  # seconds (once per hour)
+  min_confidence: 0.7
+  feature_columns_file: "/opt/nextg3n/config/feature_columns.json"
+  top_n_results: 5
+  strategies:
+    momentum_weight: 0.3
+    mean_reversion_weight: 0.2
+    breakout_weight: 0.2
+    volatility_weight: 0.1
+    trend_following_weight: 0.2
+  screening:
+    min_volume: 100000
+    min_relative_volume: 1.5
+    min_price_change: 0.03
+    min_atr: 0.25
+    max_prescreen_stocks: 100
+
+# Position Monitor configuration
+position_monitor:
+  model_path: "/opt/nextg3n/models/position_monitor"
+  update_interval: 60  # seconds
+  alert_thresholds:
+    high_risk: 0.7
+    medium_risk: 0.4
+    low_risk: 0.2
+  metrics:
+    price_movement_weight: 0.3
+    volume_spike_weight: 0.2
+    volatility_weight: 0.2
+    sentiment_weight: 0.1
+    technical_indicators_weight: 0.2
+  signals:
+    exit_signal_threshold: 0.7
+    partial_exit_threshold: 0.5
+
+# Email notification settings
+notifications:
+  enabled: true
+  email:
+    smtp_server: "smtp.gmail.com"
+    smtp_port: 587
+    smtp_user: ${EMAIL_USER}
+    smtp_password: ${EMAIL_PASSWORD}
+    from_address: "trading@nextg3n.ai"
+    to_addresses: ["trader@example.com"]
+  levels:
+    trade_entry: true
+    trade_exit: true
+    stop_loss: true
+    take_profit: true
+    error: true
+  max_emails_per_day: 50
+
+# Webhook configuration
+webhooks:
+  enabled: true
+  endpoints:
+    slack: "https://hooks.slack.com/services/XXXXXX/XXXXXX/XXXXXXX"
+    discord: "https://discord.com/api/webhooks/XXXXXX/XXXXXX"
+  events:
+    trade_entry: true
+    trade_exit: true
+    stop_loss: true
+    take_profit: true
+    error: true
+    analysis_complete: true
+
+# Performance tracking
+performance:
+  tracking_enabled: true
+  metrics_db: "sqlite:///opt/nextg3n/data/metrics.db"
+  record_trades: true
+  record_positions: true
+  record_portfolio: true
+  snapshot_interval: 3600  # seconds
+  backtest_compare: true
+  benchmark_symbol: "SPY"

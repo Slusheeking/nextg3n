@@ -1,4 +1,34 @@
 servers:
+  - name: alpaca_mcp
+    type: alpaca_mcp_tool
+    host: localhost
+    port: 8010
+    enabled: true
+    auto_start: true
+    args:
+      config: "config/llm_config.yaml"
+    env:
+      ALPACA_API_KEY: "${ALPACA_API_KEY}"
+      ALPACA_API_SECRET: "${ALPACA_API_SECRET}"
+      REDIS_HOST: "${REDIS_HOST}"
+      REDIS_PORT: "${REDIS_PORT}"
+      REDIS_DB: "${REDIS_DB}"
+      REDIS_PASSWORD: "${REDIS_PASSWORD}"
+      VALID_API_KEYS: "${VALID_API_KEYS}"
+  - name: redis_mcp
+    type: redis_mcp_tool
+    host: localhost
+    port: 8011
+    enabled: true
+    auto_start: true
+    args:
+      config: "config/llm_config.yaml"
+    env:
+      REDIS_HOST: "${REDIS_HOST}"
+      REDIS_PORT: "${REDIS_PORT}"
+      REDIS_DB: "${REDIS_DB}"
+      REDIS_PASSWORD: "${REDIS_PASSWORD}"
+      VALID_API_KEYS: "${VALID_API_KEYS}"
   - name: alpaca
     type: alpaca
     host: localhost
@@ -86,6 +116,57 @@ servers:
       REDIS_HOST: "${REDIS_HOST}"
       REDIS_PORT: "${REDIS_PORT}"
       REDIS_DB: "${REDIS_DB}"
+      VALID_API_KEYS: "${VALID_API_KEYS}"
+  - name: llm_integration
+    type: llm_integration
+    host: localhost
+    port: 8007
+    enabled: true
+    auto_start: true
+    args:
+      config: "config/llm_config.yaml"
+    env:
+      LLM_PROVIDER: "${LLM_PROVIDER:-openrouter}"
+      LLM_MODEL: "${LLM_MODEL:-google/gemini-2.0-flash-001}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+      SITE_URL: "${SITE_URL:-https://nextg3n.ai}"
+      SITE_NAME: "${SITE_NAME:-NextG3N Trading System}"
+      REDIS_HOST: "${REDIS_HOST}"
+      REDIS_PORT: "${REDIS_PORT}"
+      REDIS_DB: "${REDIS_DB}"
+      VALID_API_KEYS: "${VALID_API_KEYS}"
+  - name: trade_llm
+    type: trade_llm_server
+    host: localhost
+    port: 8009
+    enabled: true
+    auto_start: true
+    args:
+      config: "config/trade_llm_config.yaml"
+    env:
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}"
+      REDIS_HOST: "${REDIS_HOST}"
+      REDIS_PORT: "${REDIS_PORT}"
+      REDIS_DB: "${REDIS_DB}"
+      REDIS_PASSWORD: "${REDIS_PASSWORD}"
+      MCP_API_KEY: "${MCP_API_KEY:-test-key-123}"
+      VALID_API_KEYS: "${VALID_API_KEYS}"
+  - name: llm_talk
+    type: llm_talk
+    host: localhost
+    port: 8008
+    enabled: true
+    auto_start: true
+    args:
+      config: "config/llm_talk_config.yaml"
+    env:
+      MCP_API_KEY: "${MCP_API_KEY:-test-key-123}"
+      REDIS_HOST: "${REDIS_HOST}"
+      REDIS_PORT: "${REDIS_PORT}"
+      REDIS_DB: "${REDIS_DB}"
+      REDIS_PASSWORD: "${REDIS_PASSWORD}"
       VALID_API_KEYS: "${VALID_API_KEYS}"
 connection:
   timeout_seconds: 30

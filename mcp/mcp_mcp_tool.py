@@ -3,8 +3,8 @@ MCP Manager for NextG3N Trading System
 
 This module implements the MCPManager class for managing MCP servers,
 including starting, stopping, and interacting with them.
+Specifically configured for the Alpaca MCP Tool and AI-Redis MCP Tool.
 """
-
 
 import os
 import yaml
@@ -95,7 +95,34 @@ class MCPManager:
             Configuration dictionary
         """
         default_config = {
-            "servers": [],
+            "servers": [
+                {
+                    "name": "alpaca_mcp",
+                    "type": "alpaca_mcp",
+                    "enabled": True,
+                    "auto_start": True,
+                    "host": "localhost",
+                    "port": 8001,
+                    "args": {
+                        "config_path": "/home/ubuntu/nextg3n/config/llm_config.yaml"
+                    },
+                    "env": {
+                        "ALPACA_API_KEY": os.environ.get("ALPACA_API_KEY", ""),
+                        "ALPACA_API_SECRET": os.environ.get("ALPACA_API_SECRET", "")
+                    }
+                },
+                {
+                    "name": "ai_redis_mcp",
+                    "type": "ai_redis_mcp",
+                    "enabled": True,
+                    "auto_start": True,
+                    "host": "localhost",
+                    "port": 8002,
+                    "args": {
+                        "config_path": "/home/ubuntu/nextg3n/config/llm_config.yaml"
+                    }
+                }
+            ],
             "connection": {
                 "timeout_seconds": 30,
                 "retry_attempts": 3,
@@ -403,9 +430,9 @@ class MCPManager:
         
         try:
             server_type = server_config.get("type", server_name)
-            script_path = f"mcp/{server_type}_server.py"
+            script_path = f"mcp/{server_type}_tool.py"
             if not os.path.exists(script_path):
-                script_path = f"mcp/{server_name}_server.py"
+                script_path = f"mcp/{server_name}_tool.py"
             if not os.path.exists(script_path):
                 logger.error(f"Script for server {server_name} (type: {server_type}) not found at {script_path}")
                 return False
@@ -615,45 +642,6 @@ class MCPManager:
             logger.error(f"Error executing tool {tool_name} on server {server_name}: {str(e)}")
             return {"error": str(e)}
     
-    async def get_resource(self, server_name: str, resource_uri: str) -> Dict[str, Any]:
-        """
-        Get a resource from an MCP server.
-        
-        Args:
-            server_name: Name of the server
-            resource_uri: URI of the resource
-            
-        Returns:
-            Resource content
-        """
-        if server_name not in self.servers:
-            logger.error(f"Server {server_name} is not running")
-            return {"error": f"Server {server_name} is not running"}
-        
-        server_info = self.servers[server_name]
-        host = server_info["config"].get("host", "localhost")
-        port = server_info["config"].get("port", 8000)
-        
-        try:
-            headers = {}
-            if "api_key" in server_info["config"]:
-                headers["Authorization"] = f"Bearer {server_info['config']['api_key']}"
-            
-            async with self.session.get(
-                f"http://{host}:{port}/resource/{resource_uri}",
-                headers=headers,
-                timeout=self.config.get("connection", {}).get("timeout_seconds", 30)
-            ) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    return result
-                error_text = await response.text()
-                logger.error(f"Error getting resource {resource_uri} from server {server_name}: {error_text}")
-                return {"error": f"HTTP {response.status}: {error_text}"}
-        except Exception as e:
-            logger.error(f"Error getting resource {resource_uri} from server {server_name}: {str(e)}")
-            return {"error": str(e)}
-    
     async def get_server_info(self, server_name: str) -> Dict[str, Any]:
         """
         Get information about an MCP server.
@@ -748,6 +736,32 @@ class MCPManager:
             Dictionary of server information
         """
         return self.servers
+    
+    async def execute_alpaca_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute a tool on the Alpaca MCP server.
+        
+        Args:
+            tool_name: Name of the tool to execute
+            arguments: Arguments for the tool
+            
+        Returns:
+            Tool execution result
+        """
+        return await self.execute_tool("alpaca_mcp", tool_name, arguments)
+    
+    async def execute_ai_redis_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute a tool on the AI-Redis MCP server.
+        
+        Args:
+            tool_name: Name of the tool to execute
+            arguments: Arguments for the tool
+            
+        Returns:
+            Tool execution result
+        """
+        return await self.execute_tool("ai_redis_mcp", tool_name, arguments)
 
 # Create singleton instance
 mcp_manager = MCPManager()
@@ -775,7 +789,6 @@ if __name__ == "__main__":
         if not valid_api_keys or credentials.credentials not in valid_api_keys:
             raise HTTPException(status_code=401, detail="Invalid API key")
         return credentials.credentials
-    
     
     # Global exception handler
     @app.exception_handler(Exception)
@@ -832,47 +845,22 @@ if __name__ == "__main__":
             raise HTTPException(status_code=404, detail=f"Server {server_name} not found in configuration")
         return await mcp_manager.get_server_info(server_name)
     
-    @app.post("/servers/{server_name}/tools/{tool_name}", tags=["Tools"], dependencies=[Depends(verify_api_key)])
-    async def execute_tool(server_name: str, tool_name: str, request: Request):
-        """Execute a tool on a specific server."""
+    @app.post("/alpaca/tools/{tool_name}", tags=["Alpaca Tools"], dependencies=[Depends(verify_api_key)])
+    async def execute_alpaca_tool(tool_name: str, request: Request):
+        """Execute a tool on the Alpaca MCP server."""
         arguments = await request.json()
-        return await mcp_manager.execute_tool(server_name, tool_name, arguments)
+        return await mcp_manager.execute_alpaca_tool(tool_name, arguments)
     
-    @app.get("/servers/{server_name}/resources/{resource_uri:path}", tags=["Resources"], dependencies=[Depends(verify_api_key)])
-    async def get_resource(server_name: str, resource_uri: str):
-        """Get a resource from a specific server."""
-        return await mcp_manager.get_resource(server_name, resource_uri)
+    @app.post("/ai_redis/tools/{tool_name}", tags=["AI-Redis Tools"], dependencies=[Depends(verify_api_key)])
+    async def execute_ai_redis_tool(tool_name: str, request: Request):
+        """Execute a tool on the AI-Redis MCP server."""
+        arguments = await request.json()
+        return await mcp_manager.execute_ai_redis_tool(tool_name, arguments)
     
     @app.get("/health", tags=["Health"], dependencies=[Depends(verify_api_key)])
     async def health_check():
         """Perform health checks on all running servers."""
         return await mcp_manager.health_check()
-    
-    @app.get("/logs", tags=["Logs"], dependencies=[Depends(verify_api_key)])
-    async def get_system_logs(
-        level: Optional[str] = None,
-        service: Optional[str] = None,
-        limit: int = 100,
-        start_time: Optional[str] = None,
-        end_time: Optional[str] = None
-    ):
-        """Get system logs with optional filtering."""
-        logs = get_logs(level, service, limit, start_time, end_time)
-        return {"logs": logs, "count": len(logs), "timestamp": datetime.utcnow().isoformat()}
-    
-    @app.get("/logs/services", tags=["Logs"], dependencies=[Depends(verify_api_key)])
-    async def get_log_services():
-        """Get a list of all services that have logged messages."""
-        all_logs = get_logs(limit=10000)
-        services = sorted(list(set(log["logger"] for log in all_logs)))
-        return {"services": services, "count": len(services)}
-    
-    @app.get("/logs/levels", tags=["Logs"], dependencies=[Depends(verify_api_key)])
-    async def get_log_levels():
-        """Get a list of all log levels used."""
-        all_logs = get_logs(limit=10000)
-        levels = sorted(list(set(log["level"] for log in all_logs)))
-        return {"levels": levels}
     
     @app.get("/servers/{server_name}/logs", tags=["Servers"], dependencies=[Depends(verify_api_key)])
     async def get_server_logs(server_name: str, log_type: str = "both", lines: int = 100):
@@ -884,23 +872,26 @@ if __name__ == "__main__":
         """Get statistics for all tracked servers."""
         return mcp_manager.get_server_stats()
     
-    @app.get("/docs/servers", tags=["Documentation"])
-    async def get_server_docs():
-        """Get documentation about available servers and their tools/resources."""
-        available_servers = mcp_manager.get_available_servers()
-        running_servers = mcp_manager.get_running_servers()
-        result = {}
-        for server_config in available_servers:
-            server_name = server_config["name"]
-            server_info = {
-                "config": server_config,
-                "status": "running" if server_name in running_servers else "stopped",
-            }
-            if server_name in running_servers:
-                server_info["info"] = running_servers[server_name]["info"]
-            result[server_name] = server_info
-        return result
+    @app.get("/market_data/{symbol}", tags=["Market Data"], dependencies=[Depends(verify_api_key)])
+    async def get_market_data(symbol: str):
+        """Get market data for a specific symbol using the AI-Redis MCP Tool."""
+        return await mcp_manager.execute_ai_redis_tool("get_market_data", {"symbol": symbol})
+    
+    @app.get("/positions", tags=["Portfolio"], dependencies=[Depends(verify_api_key)])
+    async def get_positions():
+        """Get all active positions using the AI-Redis MCP Tool."""
+        return await mcp_manager.execute_ai_redis_tool("get_all_positions", {})
+    
+    @app.get("/account", tags=["Portfolio"], dependencies=[Depends(verify_api_key)])
+    async def get_account_info():
+        """Get account information using the AI-Redis MCP Tool."""
+        return await mcp_manager.execute_ai_redis_tool("get_account_info", {})
+    
+    @app.post("/orders", tags=["Trading"], dependencies=[Depends(verify_api_key)])
+    async def submit_order(request: Request):
+        """Submit a trading order using the Alpaca MCP Tool."""
+        order_data = await request.json()
+        return await mcp_manager.execute_alpaca_tool("submit_order", order_data)
     
     port = mcp_manager.config.get("manager_port", 8080)
     uvicorn.run(app, host="0.0.0.0", port=port)
-    
