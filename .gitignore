@@ -34,7 +34,6 @@ env/
 *.log
 *.csv
 *.jsonl
-data/
 logs/
 vector_db_data/
 *.dump
