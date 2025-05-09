@@ -11,7 +11,7 @@ from monitor.logging_utils import get_logger
 logger = get_logger("llm")
 logger.info("Initializing LLM package")
 
-from .llm_integration import LLMTradingIntegration
+from .main_llm import LLMTradingIntegration
 
 __all__ = [
     "LLMTradingIntegration",
